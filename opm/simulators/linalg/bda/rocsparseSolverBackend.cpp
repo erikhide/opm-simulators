@@ -37,6 +37,7 @@
 #undef HAVE_CUDA
 
 #include <opm/simulators/linalg/bda/rocsparseSolverBackend.hpp>
+#include <opm/simulators/linalg/bda/rocsparseWellContributions.hpp>
 
 #include <opm/simulators/linalg/bda/BdaResult.hpp>
 
@@ -48,29 +49,41 @@
 #undef HIP_HAVE_CUDA_DEFINED
 #endif
 
-#define HIP_CHECK(stat)                               \
-    {                                                 \
-        if(stat != hipSuccess)                        \
-        {                                             \
-            OPM_THROW(std::logic_error, "HIP error"); \
-        }                                             \
-    }
+#define HIP_CHECK(STAT)                                  \
+    do {                                                 \
+        const hipError_t stat = (STAT);                  \
+        if(stat != hipSuccess)                           \
+        {                                                \
+            std::ostringstream oss;                      \
+            oss << "rocsparseSolverBackend::hip ";       \
+            oss << "error: " << hipGetErrorString(stat); \
+            OPM_THROW(std::logic_error, oss.str());      \
+        }                                                \
+    } while(0)
 
-#define ROCSPARSE_CHECK(stat)                               \
-    {                                                       \
-        if(stat != rocsparse_status_success)                \
-        {                                                   \
-            OPM_THROW(std::logic_error, "rocsparse error"); \
-        }                                                   \
-    }
+#define ROCSPARSE_CHECK(STAT)                            \
+    do {                                                 \
+        const rocsparse_status stat = (STAT);            \
+        if(stat != rocsparse_status_success)             \
+        {                                                \
+            std::ostringstream oss;                      \
+            oss << "rocsparseSolverBackend::rocsparse "; \
+            oss << "error: " << stat;                    \
+            OPM_THROW(std::logic_error, oss.str());      \
+        }                                                \
+    } while(0)
 
-#define ROCBLAS_CHECK(stat)                               \
-    {                                                     \
-        if(stat != rocblas_status_success)                \
-        {                                                 \
-            OPM_THROW(std::logic_error, "rocblas error"); \
-        }                                                 \
-    }
+#define ROCBLAS_CHECK(STAT)                              \
+    do {                                                 \
+        const rocblas_status stat = (STAT);              \
+        if(stat != rocblas_status_success)               \
+        {                                                \
+            std::ostringstream oss;                      \
+            oss << "rocsparseSolverBackend::rocblas ";   \
+            oss << "error: " << stat;                    \
+            OPM_THROW(std::logic_error, oss.str());      \
+        }                                                \
+    } while(0)
 
 #include <cstddef>
 
@@ -84,11 +97,12 @@ using Dune::Timer;
 
 template <unsigned int block_size>
 rocsparseSolverBackend<block_size>::rocsparseSolverBackend(int verbosity_, int maxit_, double tolerance_, unsigned int platformID_, unsigned int deviceID_) : BdaSolver<block_size>(verbosity_, maxit_, tolerance_, platformID_, deviceID_) {
-    hipDevice_t device;
-    if(hipDeviceGet(&device, deviceID) != hipSuccess)
-    {
-        OPM_THROW(std::logic_error, "HIP Error: could not get device");
+    int numDevices = 0;
+    HIP_CHECK(hipGetDeviceCount(&numDevices));
+    if (static_cast<int>(deviceID) >= numDevices) {
+        OPM_THROW(std::runtime_error, "Error chosen too high HIP device ID");
     }
+    HIP_CHECK(hipSetDevice(deviceID));
 
     ROCSPARSE_CHECK(rocsparse_create_handle(&handle));
     ROCBLAS_CHECK(rocblas_create_handle(&blas_handle));
@@ -139,10 +153,21 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
     double one  = 1.0;
     double mone = -1.0;
 
-    Timer t_total, t_prec(false), t_spmv(false), t_rest(false);
+    Timer t_total, t_prec(false), t_spmv(false), t_well(false), t_rest(false);
+
+    // set stream here, the WellContributions object is destroyed every linear solve
+    // the number of wells can change every linear solve
+    if(wellContribs.getNumWells() > 0){
+        static_cast<WellContributionsRocsparse&>(wellContribs).setStream(stream);
+    }
 
 // HIP_VERSION is defined as (HIP_VERSION_MAJOR * 10000000 + HIP_VERSION_MINOR * 100000 + HIP_VERSION_PATCH)
-#if HIP_VERSION >= 50400000
+#if HIP_VERSION >= 60000000
+    ROCSPARSE_CHECK(rocsparse_dbsrmv(handle, dir, operation,
+                                     Nb, Nb, nnzb, &one, descr_M,
+                                     d_Avals, d_Arows, d_Acols, block_size,
+                                     spmv_info, d_x, &zero, d_r));
+#elif HIP_VERSION >= 50400000
     ROCSPARSE_CHECK(rocsparse_dbsrmv_ex(handle, dir, operation,
                                         Nb, Nb, nnzb, &one, descr_M,
                                         d_Avals, d_Arows, d_Acols, block_size,
@@ -153,7 +178,6 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
                                         d_Avals, d_Arows, d_Acols, block_size,
                                         d_x, &zero, d_r));
 #endif
-
     ROCBLAS_CHECK(rocblas_dscal(blas_handle, N, &mone, d_r, 1));
     ROCBLAS_CHECK(rocblas_daxpy(blas_handle, N, &one, d_b, 1, d_r, 1));
     ROCBLAS_CHECK(rocblas_dcopy(blas_handle, N, d_r, 1, d_rw, 1));
@@ -200,7 +224,12 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
         }
 
         // spmv
-#if HIP_VERSION >= 50400000
+#if HIP_VERSION >= 60000000
+        ROCSPARSE_CHECK(rocsparse_dbsrmv(handle, dir, operation,
+                                          Nb, Nb, nnzb, &one, descr_M,
+                                          d_Avals, d_Arows, d_Acols, block_size,
+                                          spmv_info, d_pw, &zero, d_v));
+#elif HIP_VERSION >= 50400000
         ROCSPARSE_CHECK(rocsparse_dbsrmv_ex(handle, dir, operation,
                                             Nb, Nb, nnzb, &one, descr_M,
                                             d_Avals, d_Arows, d_Acols, block_size,
@@ -214,10 +243,18 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
         if (verbosity >= 3) {
             HIP_CHECK(hipStreamSynchronize(stream));
             t_spmv.stop();
-            t_rest.start();
+            t_well.start();
         }
 
         // apply wellContributions
+        if(wellContribs.getNumWells() > 0){
+            static_cast<WellContributionsRocsparse&>(wellContribs).apply(d_pw, d_v);
+        }
+        if (verbosity >= 3) {
+            HIP_CHECK(hipStreamSynchronize(stream));
+            t_well.stop();
+            t_rest.start();
+        }
 
         ROCBLAS_CHECK(rocblas_ddot(blas_handle, N, d_rw, 1, d_v, 1, &tmp1));
         alpha = rho / tmp1;
@@ -253,7 +290,12 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
         }
 
         // spmv
-#if HIP_VERSION >= 50400000
+#if HIP_VERSION >= 60000000
+        ROCSPARSE_CHECK(rocsparse_dbsrmv(handle, dir, operation,
+                                         Nb, Nb, nnzb, &one, descr_M,
+                                         d_Avals, d_Arows, d_Acols, block_size,
+                                         spmv_info, d_s, &zero, d_t));
+#elif HIP_VERSION >= 50400000
         ROCSPARSE_CHECK(rocsparse_dbsrmv_ex(handle, dir, operation,
                                             Nb, Nb, nnzb, &one, descr_M,
                                             d_Avals, d_Arows, d_Acols, block_size,
@@ -267,10 +309,18 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
         if(verbosity >= 3){
             HIP_CHECK(hipStreamSynchronize(stream));
             t_spmv.stop();
-            t_rest.start();
+            t_well.start();
         }
 
         // apply wellContributions
+        if(wellContribs.getNumWells() > 0){
+            static_cast<WellContributionsRocsparse&>(wellContribs).apply(d_s, d_t);
+        }
+        if (verbosity >= 3) {
+            HIP_CHECK(hipStreamSynchronize(stream));
+            t_well.stop();
+            t_rest.start();
+        }
 
         ROCBLAS_CHECK(rocblas_ddot(blas_handle, N, d_t, 1, d_r, 1, &tmp1));
         ROCBLAS_CHECK(rocblas_ddot(blas_handle, N, d_t, 1, d_t, 1, &tmp2));
@@ -312,6 +362,7 @@ void rocsparseSolverBackend<block_size>::gpu_pbicgstab([[maybe_unused]] WellCont
         std::ostringstream out;
         out << "rocsparseSolver::prec_apply:  " << t_prec.elapsed() << " s\n";
         out << "rocsparseSolver::spmv:        " << t_spmv.elapsed() << " s\n";
+        out << "rocsparseSolver::well:        " << t_well.elapsed() << " s\n";
         out << "rocsparseSolver::rest:        " << t_rest.elapsed() << " s\n";
         out << "rocsparseSolver::total_solve: " << res.elapsed << " s\n";
         OpmLog::info(out.str());
@@ -474,7 +525,12 @@ bool rocsparseSolverBackend<block_size>::analyze_matrix() {
                              Nb, nnzbs_prec, descr_U, d_Mvals, d_Mrows, d_Mcols, \
                              block_size, ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
 
-#if HIP_VERSION >= 50400000
+#if HIP_VERSION >= 60000000
+    ROCSPARSE_CHECK(rocsparse_dbsrmv_analysis(handle, dir, operation,
+                                              Nb, Nb, nnzb,
+                                              descr_A, d_Avals, d_Arows, d_Acols,
+                                              block_size, spmv_info));
+#elif HIP_VERSION >= 50400000
     ROCSPARSE_CHECK(rocsparse_dbsrmv_ex_analysis(handle, dir, operation,
         Nb, Nb, nnzb,
         descr_A, d_Avals, d_Arows, d_Acols,
@@ -526,18 +582,7 @@ void rocsparseSolverBackend<block_size>::solve_system(WellContributions &wellCon
     Timer t;
 
     // actually solve
-    try {
-        gpu_pbicgstab(wellContribs, res);
-    } catch (const cl::Error& error) {
-        std::ostringstream oss;
-        oss << "rocsparseSolverBackend::solve_system error: " << error.what() << "(" << error.err() << ")\n";
-        oss << getErrorString(error.err());
-        // rethrow exception
-        OPM_THROW(std::logic_error, oss.str());
-    } catch (const std::logic_error& error) {
-        // rethrow exception by OPM_THROW in the try{}, without this, a segfault occurs
-        throw error;
-    }
+    gpu_pbicgstab(wellContribs, res);
 
     if (verbosity >= 3) {
         HIP_CHECK(hipStreamSynchronize(stream));

@@ -81,8 +81,8 @@ private:
     MultisegmentWellEquations<Scalar,numWellEq,numEq>& eqns_; //!< Reference to equation system
 };
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assembleControlEq(const WellState& well_state,
                   const GroupState& group_state,
                   const Schedule& schedule,
@@ -197,30 +197,36 @@ assembleControlEq(const WellState& well_state,
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
-assemblePressureLoss(const int seg,
-                     const int seg_upwind,
-                     const EvalWell& accelerationPressureLoss,
-                     Equations& eqns1) const
-{
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
+assembleAccelerationTerm(const int seg_target,
+                         const int seg,
+                         const int seg_upwind,
+                         const EvalWell& accelerationTerm,
+                         Equations& eqns1) const
+{   // seg_target:  segment for which we are assembling the acc term
+    // seg:         segment for wich we have computed the term
+    // seg_upwind:  upwind segment to seg
+    // acceleration term shold be
+    //  * velocity head for seg_target if seg = seg_target
+    //  * negative velocity head for seg if seg != seg_target   
     MultisegmentWellEquationAccess<Scalar,numWellEq,Indices::numEq> eqns(eqns1);
-    eqns.residual()[seg][SPres] -= accelerationPressureLoss.value();
-    eqns.D()[seg][seg][SPres][SPres] -= accelerationPressureLoss.derivative(SPres + Indices::numEq);
-    eqns.D()[seg][seg][SPres][WQTotal] -= accelerationPressureLoss.derivative(WQTotal + Indices::numEq);
+    eqns.residual()[seg_target][SPres] -= accelerationTerm.value();
+    eqns.D()[seg_target][seg][SPres][SPres] -= accelerationTerm.derivative(SPres + Indices::numEq);
+    eqns.D()[seg_target][seg][SPres][WQTotal] -= accelerationTerm.derivative(WQTotal + Indices::numEq);
     if constexpr (has_wfrac_variable) {
-        eqns.D()[seg][seg_upwind][SPres][WFrac] -= accelerationPressureLoss.derivative(WFrac + Indices::numEq);
+        eqns.D()[seg_target][seg_upwind][SPres][WFrac] -= accelerationTerm.derivative(WFrac + Indices::numEq);
     }
     if constexpr (has_gfrac_variable) {
-        eqns.D()[seg][seg_upwind][SPres][GFrac] -= accelerationPressureLoss.derivative(GFrac + Indices::numEq);
+        eqns.D()[seg_target][seg_upwind][SPres][GFrac] -= accelerationTerm.derivative(GFrac + Indices::numEq);
     }
-}
+}                     
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
-assembleHydroPressureLoss(const int seg, 
-                          const int seg_density, 
-                          const EvalWell& hydro_pressure_drop_seg, 
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
+assembleHydroPressureLoss(const int seg,
+                          const int seg_density,
+                          const EvalWell& hydro_pressure_drop_seg,
                           Equations& eqns1) const
 {
     MultisegmentWellEquationAccess<Scalar,numWellEq,Indices::numEq> eqns(eqns1);
@@ -231,23 +237,23 @@ assembleHydroPressureLoss(const int seg,
 
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
-assemblePressureEqExtraDerivatives(const int seg, 
-                                   const int seg_upwind, 
-                                   const EvalWell& extra_derivatives, 
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
+assemblePressureEqExtraDerivatives(const int seg,
+                                   const int seg_upwind,
+                                   const EvalWell& extra_derivatives,
                                    Equations& eqns1) const
 {
     MultisegmentWellEquationAccess<Scalar,numWellEq,Indices::numEq> eqns(eqns1);
-    // diregard residual
+    // disregard residual
     // Frac - derivatives are zero (they belong to upwind^2)
     eqns.D()[seg][seg_upwind][SPres][SPres] += extra_derivatives.derivative(SPres + Indices::numEq);
     eqns.D()[seg][seg_upwind][SPres][WQTotal] += extra_derivatives.derivative(WQTotal + Indices::numEq);
-}                                   
+}
 
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assemblePressureEq(const int seg,
                    const int seg_upwind,
                    const int outlet_segment_index,
@@ -275,8 +281,8 @@ assemblePressureEq(const int seg,
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assembleTrivialEq(const int seg,
                   const Scalar value,
                   Equations& eqns1) const
@@ -286,8 +292,8 @@ assembleTrivialEq(const int seg,
     eqns.D()[seg][seg][SPres][WQTotal] = 1.;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assembleAccumulationTerm(const int seg,
                          const int comp_idx,
                          const EvalWell& accumulation_term,
@@ -300,8 +306,8 @@ assembleAccumulationTerm(const int seg,
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assembleOutflowTerm(const int seg,
                     const int seg_upwind,
                     const int comp_idx,
@@ -320,8 +326,8 @@ assembleOutflowTerm(const int seg,
     // pressure derivative should be zero
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assembleInflowTerm(const int seg,
                    const int inlet,
                    const int inlet_upwind,
@@ -341,8 +347,8 @@ assembleInflowTerm(const int seg,
     // pressure derivative should be zero
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void MultisegmentWellAssemble<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void MultisegmentWellAssemble<FluidSystem,Indices>::
 assemblePerforationEq(const int seg,
                       const int cell_idx,
                       const int comp_idx,
@@ -369,7 +375,7 @@ assemblePerforationEq(const int seg,
 }
 
 #define INSTANCE(...) \
-template class MultisegmentWellAssemble<BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,__VA_ARGS__,double>;
+template class MultisegmentWellAssemble<BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,__VA_ARGS__>;
 
 // One phase
 INSTANCE(BlackOilOnePhaseIndices<0u,0u,0u,0u,false,false,0u,1u,0u>)

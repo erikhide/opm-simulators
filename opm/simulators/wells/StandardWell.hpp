@@ -55,15 +55,13 @@ namespace Opm
     template<typename TypeTag>
     class StandardWell : public WellInterface<TypeTag>
                        , public StandardWellEval<GetPropType<TypeTag, Properties::FluidSystem>,
-                                                 GetPropType<TypeTag, Properties::Indices>,
-                                                 GetPropType<TypeTag, Properties::Scalar>>
+                                                 GetPropType<TypeTag, Properties::Indices>>
     {
 
     public:
         using Base = WellInterface<TypeTag>;
         using StdWellEval = StandardWellEval<GetPropType<TypeTag, Properties::FluidSystem>,
-                                             GetPropType<TypeTag, Properties::Indices>,
-                                             GetPropType<TypeTag, Properties::Scalar>>;
+                                             GetPropType<TypeTag, Properties::Indices>>;
 
         // TODO: some functions working with AD variables handles only with values (double) without
         // dealing with derivatives. It can be beneficial to make functions can work with either AD or scalar value.
@@ -163,7 +161,7 @@ namespace Opm
                                                    DeferredLogger& deferred_logger) override;
 
         /// computing the well potentials for group control
-        virtual void computeWellPotentials(const Simulator& ebosSimulator,
+        virtual void computeWellPotentials(const Simulator& simulator,
                                            const WellState& well_state,
                                            std::vector<double>& well_potentials,
                                            DeferredLogger& deferred_logger) /* const */ override;
@@ -176,11 +174,11 @@ namespace Opm
                                                WellState& well_state,
                                                DeferredLogger& deferred_logger) override;
 
-        virtual void calculateExplicitQuantities(const Simulator& ebosSimulator,
+        virtual void calculateExplicitQuantities(const Simulator& simulator,
                                                  const WellState& well_state,
                                                  DeferredLogger& deferred_logger) override; // should be const?
 
-        virtual void updateProductivityIndex(const Simulator& ebosSimulator,
+        virtual void updateProductivityIndex(const Simulator& simulator,
                                              const WellProdIndexCalculator& wellPICalc,
                                              WellState& well_state,
                                              DeferredLogger& deferred_logger) const override;
@@ -197,13 +195,24 @@ namespace Opm
                                               const WellState& well_state) const override;
 
         // iterate well equations with the specified control until converged
-        bool iterateWellEqWithControl(const Simulator& ebosSimulator,
+        bool iterateWellEqWithControl(const Simulator& simulator,
                                       const double dt,
                                       const Well::InjectionControls& inj_controls,
                                       const Well::ProductionControls& prod_controls,
                                       WellState& well_state,
                                       const GroupState& group_state,
                                       DeferredLogger& deferred_logger) override;
+
+        // iterate well equations including control switching
+        bool iterateWellEqWithSwitching(const Simulator& simulator,
+                                        const double dt,
+                                        const Well::InjectionControls& inj_controls,
+                                        const Well::ProductionControls& prod_controls,
+                                        WellState& well_state,
+                                        const GroupState& group_state,
+                                        DeferredLogger& deferred_logger, 
+                                        const bool fixed_control = false,
+                                        const bool fixed_status = false) override;
 
         /// \brief Wether the Jacobian will also have well contributions in it.
         virtual bool jacobianContainsWellContributions() const override
@@ -212,27 +221,31 @@ namespace Opm
         }
 
         /* returns BHP */
-        double computeWellRatesAndBhpWithThpAlqProd(const Simulator &ebos_simulator,
-                               const SummaryState &summary_state,
-                               DeferredLogger &deferred_logger,
-                               std::vector<double> &potentials,
+        double computeWellRatesAndBhpWithThpAlqProd(const Simulator& simulator,
+                               const SummaryState& summary_state,
+                               DeferredLogger& deferred_logger,
+                               std::vector<double>& potentials,
                                double alq) const;
 
         void computeWellRatesWithThpAlqProd(
-            const Simulator &ebos_simulator,
-            const SummaryState &summary_state,
-            DeferredLogger &deferred_logger,
-            std::vector<double> &potentials,
+            const Simulator& simulator,
+            const SummaryState& summary_state,
+            DeferredLogger& deferred_logger,
+            std::vector<double>& potentials,
             double alq) const;
 
         std::optional<double> computeBhpAtThpLimitProdWithAlq(
-            const Simulator& ebos_simulator,
+            const Simulator& simulator,
             const SummaryState& summary_state,
             const double alq_value,
             DeferredLogger& deferred_logger) const override;
 
+        void updateIPRImplicit(const Simulator& simulator,
+                               WellState& well_state,
+                               DeferredLogger& deferred_logger) override;
+
         virtual void computeWellRatesWithBhp(
-            const Simulator& ebosSimulator,
+            const Simulator& simulator,
             const double& bhp,
             std::vector<double>& well_flux,
             DeferredLogger& deferred_logger) const override;
@@ -241,8 +254,8 @@ namespace Opm
         using Base::phaseUsage;
         using Base::vfp_properties_;
 
-        virtual std::vector<double> computeCurrentWellRates(const Simulator& ebosSimulator,
-                                                            DeferredLogger& deferred_logger) const override;
+        std::vector<double> computeCurrentWellRates(const Simulator& simulator,
+                                                    DeferredLogger& deferred_logger) const override;
 
         std::vector<double> getPrimaryVars() const override;
 
@@ -260,16 +273,16 @@ namespace Opm
         // calculate the properties for the well connections
         // to calulate the pressure difference between well connections.
         using WellConnectionProps = typename StdWellEval::StdWellConnections::Properties;
-        void computePropertiesForWellConnectionPressures(const Simulator& ebosSimulator,
+        void computePropertiesForWellConnectionPressures(const Simulator& simulator,
                                                          const WellState& well_state,
                                                          WellConnectionProps& props) const;
 
-        void computeWellConnectionDensitesPressures(const Simulator& ebosSimulator,
+        void computeWellConnectionDensitesPressures(const Simulator& simulator,
                                                     const WellState& well_state,
                                                     const WellConnectionProps& props,
                                                     DeferredLogger& deferred_logger);
 
-        void computeWellConnectionPressures(const Simulator& ebosSimulator,
+        void computeWellConnectionPressures(const Simulator& simulator,
                                             const WellState& well_state,
                                             DeferredLogger& deferred_logger);
 
@@ -277,7 +290,7 @@ namespace Opm
         void computePerfRate(const IntensiveQuantities& intQuants,
                              const std::vector<Value>& mob,
                              const Value& bhp,
-                             const double Tw,
+                             const std::vector<Scalar>& Tw,
                              const int perf,
                              const bool allow_cf,
                              std::vector<Value>& cq_s,
@@ -293,7 +306,7 @@ namespace Opm
                              const Value& rvw,
                              const Value& rsw,
                              std::vector<Value>& b_perfcells_dense,
-                             const double Tw,
+                             const std::vector<Scalar>& Tw,
                              const int perf,
                              const bool allow_cf,
                              const Value& skin_pressure,
@@ -302,26 +315,30 @@ namespace Opm
                              PerforationRates& perf_rates,
                              DeferredLogger& deferred_logger) const;
 
-        void computeWellRatesWithBhpIterations(const Simulator& ebosSimulator,
+        void computeWellRatesWithBhpIterations(const Simulator& simulator,
                                               const double& bhp,
                                               std::vector<double>& well_flux,
                                               DeferredLogger& deferred_logger) const override;
 
         std::vector<double> computeWellPotentialWithTHP(
-            const Simulator& ebosSimulator,
+            const Simulator& simulator,
             DeferredLogger& deferred_logger,
             const WellState &well_state) const;
+
+        bool computeWellPotentialsImplicit(const Simulator& simulator,
+                                           std::vector<double>& well_potentials,
+                                           DeferredLogger& deferred_logger) const;               
 
         virtual double getRefDensity() const override;
 
         // get the mobility for specific perforation
         template<class Value>
-        void getMobility(const Simulator& ebosSimulator,
+        void getMobility(const Simulator& simulator,
                          const int perf,
                          std::vector<Value>& mob,
                          DeferredLogger& deferred_logger) const;
 
-        void updateWaterMobilityWithPolymer(const Simulator& ebos_simulator,
+        void updateWaterMobilityWithPolymer(const Simulator& simulator,
                                             const int perf,
                                             std::vector<EvalWell>& mob_water,
                                             DeferredLogger& deferred_logger) const;
@@ -335,7 +352,7 @@ namespace Opm
                                                  const SummaryState& summary_state,
                                                  DeferredLogger& deferred_logger) const;
 
-        virtual void assembleWellEqWithoutIteration(const Simulator& ebosSimulator,
+        virtual void assembleWellEqWithoutIteration(const Simulator& simulator,
                                                     const double dt,
                                                     const Well::InjectionControls& inj_controls,
                                                     const Well::ProductionControls& prod_controls,
@@ -343,7 +360,7 @@ namespace Opm
                                                     const GroupState& group_state,
                                                     DeferredLogger& deferred_logger) override;
 
-        void assembleWellEqWithoutIterationImpl(const Simulator& ebosSimulator,
+        void assembleWellEqWithoutIterationImpl(const Simulator& simulator,
                                                 const double dt,
                                                 const Well::InjectionControls& inj_controls,
                                                 const Well::ProductionControls& prod_controls,
@@ -351,7 +368,7 @@ namespace Opm
                                                 const GroupState& group_state,
                                                 DeferredLogger& deferred_logger);
 
-        void calculateSinglePerf(const Simulator& ebosSimulator,
+        void calculateSinglePerf(const Simulator& simulator,
                                  const int perf,
                                  WellState& well_state,
                                  std::vector<RateVector>& connectionRates,
@@ -361,20 +378,25 @@ namespace Opm
                                  DeferredLogger& deferred_logger) const;
 
         // check whether the well is operable under BHP limit with current reservoir condition
-        virtual void checkOperabilityUnderBHPLimit(const WellState& well_state, const Simulator& ebos_simulator, DeferredLogger& deferred_logger) override;
+        void checkOperabilityUnderBHPLimit(const WellState& well_state,
+                                           const Simulator& simulator,
+                                           DeferredLogger& deferred_logger) override;
 
         // check whether the well is operable under THP limit with current reservoir condition
-        virtual void checkOperabilityUnderTHPLimit(const Simulator& ebos_simulator, const WellState& well_state, DeferredLogger& deferred_logger) override;
+        void checkOperabilityUnderTHPLimit(const Simulator& simulator,
+                                           const WellState& well_state,
+                                           DeferredLogger& deferred_logger) override;
 
         // updating the inflow based on the current reservoir condition
-        virtual void updateIPR(const Simulator& ebos_simulator, DeferredLogger& deferred_logger) const override;
+        void updateIPR(const Simulator& simulator,
+                       DeferredLogger& deferred_logger) const override;
 
         // for a well, when all drawdown are in the wrong direction, then this well will not
         // be able to produce/inject .
-        bool allDrawDownWrongDirection(const Simulator& ebos_simulator) const;
+        bool allDrawDownWrongDirection(const Simulator& simulator) const;
 
         // whether the well can produce / inject based on the current well state (bhp)
-        bool canProduceInjectWithCurrentBhp(const Simulator& ebos_simulator,
+        bool canProduceInjectWithCurrentBhp(const Simulator& simulator,
                                             const WellState& well_state,
                                             DeferredLogger& deferred_logger);
 
@@ -383,7 +405,7 @@ namespace Opm
         // we turn on crossflow to avoid singular well equations. It can result in wrong-signed
         // well rates, it can cause problem for THP calculation
         // TODO: looking for better alternative to avoid wrong-signed well rates
-        bool openCrossFlowAvoidSingularity(const Simulator& ebos_simulator) const;
+        bool openCrossFlowAvoidSingularity(const Simulator& simulator) const;
 
         // calculate the skin pressure based on water velocity, throughput and polymer concentration.
         // throughput is used to describe the formation damage during water/polymer injection.
@@ -405,12 +427,12 @@ namespace Opm
                             DeferredLogger& deferred_logger) const;
 
         // modify the water rate for polymer injectivity study
-        void handleInjectivityRate(const Simulator& ebosSimulator,
+        void handleInjectivityRate(const Simulator& simulator,
                                    const int perf,
                                    std::vector<EvalWell>& cq_s) const;
 
         // handle the extra equations for polymer injectivity study
-        void handleInjectivityEquations(const Simulator& ebosSimulator,
+        void handleInjectivityEquations(const Simulator& simulator,
                                         const WellState& well_state,
                                         const int perf,
                                         const EvalWell& water_flux_s,
@@ -432,11 +454,11 @@ namespace Opm
 
 
         std::optional<double> computeBhpAtThpLimitProd(const WellState& well_state,
-                                                       const Simulator& ebos_simulator,
+                                                       const Simulator& simulator,
                                                        const SummaryState& summary_state,
                                                        DeferredLogger& deferred_logger) const;
 
-        std::optional<double> computeBhpAtThpLimitInj(const Simulator& ebos_simulator,
+        std::optional<double> computeBhpAtThpLimitInj(const Simulator& simulator,
                                                       const SummaryState& summary_state,
                                                       DeferredLogger& deferred_logger) const;
 

@@ -35,6 +35,7 @@
 #include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
 #include <opm/simulators/utils/ParallelCommunication.hpp>
 
+#include <opm/simulators/wells/FractionCalculator.hpp>
 #include <opm/simulators/wells/GroupState.hpp>
 #include <opm/simulators/wells/RegionAverageCalculator.hpp>
 #include <opm/simulators/wells/TargetCalculator.hpp>
@@ -657,12 +658,13 @@ namespace WellGroupHelpers
                              const PhaseUsage& pu,
                              const SummaryState& st,
                              const WellState& wellState,
-                             GroupState& group_state)
+                             GroupState& group_state,
+                             bool sum_rank)
     {
         const int np = wellState.numPhases();
         for (const std::string& groupName : group.groups()) {
             const Group& groupTmp = schedule.getGroup(groupName, reportStepIdx);
-            updateREINForGroups(groupTmp, schedule, reportStepIdx, pu, st, wellState, group_state);
+            updateREINForGroups(groupTmp, schedule, reportStepIdx, pu, st, wellState, group_state, sum_rank);
         }
 
         std::vector<double> rein(np, 0.0);
@@ -671,11 +673,13 @@ namespace WellGroupHelpers
         }
 
         // add import rate and subtract consumption rate for group for gas
-        if (schedule[reportStepIdx].gconsump().has(group.name())) {
-            const auto& gconsump = schedule[reportStepIdx].gconsump().get(group.name(), st);
-            if (pu.phase_used[BlackoilPhases::Vapour]) {
-                rein[pu.phase_pos[BlackoilPhases::Vapour]] += gconsump.import_rate;
-                rein[pu.phase_pos[BlackoilPhases::Vapour]] -= gconsump.consumption_rate;
+        if (sum_rank) {
+            if (schedule[reportStepIdx].gconsump().has(group.name())) {
+                const auto& gconsump = schedule[reportStepIdx].gconsump().get(group.name(), st);
+                if (pu.phase_used[BlackoilPhases::Vapour]) {
+                    rein[pu.phase_pos[BlackoilPhases::Vapour]] += gconsump.import_rate;
+                    rein[pu.phase_pos[BlackoilPhases::Vapour]] -= gconsump.consumption_rate;
+                }
             }
         }
 
@@ -709,11 +713,13 @@ namespace WellGroupHelpers
         double current_rate = 0.0;
         const auto& pu = well_state.phaseUsage();
         bool injection = true;
+        double sign = 1.0;
         switch (gpm->flow_target()) {
             case GPMaint::FlowTarget::RESV_PROD:
             {
                 current_rate = -group_state.injection_vrep_rate(group.name());
                 injection = false;
+                sign = -1.0;
                 break;
             }
             case GPMaint::FlowTarget::RESV_OINJ:
@@ -765,7 +771,7 @@ namespace WellGroupHelpers
         // (i.e. error > 0) and higher for producers.
         bool activate = (injection && error > 0) || (!injection && error < 0);
         double rate = activate? gpm->rate(gpmaint_state, current_rate, error, dt) : 0.0;
-        group_state.update_gpmaint_target(group.name(), rate);
+        group_state.update_gpmaint_target(group.name(), std::max(0.0, sign * rate));
     }
 
 
@@ -785,120 +791,125 @@ namespace WellGroupHelpers
             return {};
         }
 
-        // Fixed pressure nodes of the network are the roots of trees.
-        // Leaf nodes must correspond to groups in the group structure.
-        // Let us first find all leaf nodes of the network. We also
-        // create a vector of all nodes, ordered so that a child is
-        // always after its parent.
-        std::stack<std::string> children;
-        std::set<std::string> leaf_nodes;
-        std::vector<std::string> root_to_child_nodes;
-        children.push(network.root().name());
-        while (!children.empty()) {
-            const auto node = children.top();
-            children.pop();
-            root_to_child_nodes.push_back(node);
-            auto branches = network.downtree_branches(node);
-            if (branches.empty()) {
-                leaf_nodes.insert(node);
-            }
-            for (const auto& branch : branches) {
-                children.push(branch.downtree_node());
-            }
-        }
-        assert(children.empty());
-
-        // Starting with the leaf nodes of the network, get the flow rates
-        // from the corresponding groups.
-        std::map<std::string, std::vector<double>> node_inflows;
-        for (const auto& node : leaf_nodes) {
-            node_inflows[node] = group_state.production_rates(node);
-            // Add the ALQ amounts to the gas rates if requested.
-            if (network.node(node).add_gas_lift_gas()) {
-                const auto& group = schedule.getGroup(node, report_time_step);
-                for (const std::string& wellname : group.wells()) {
-                    const Well& well = schedule.getWell(wellname, report_time_step);
-                    // Here we use the efficiency unconditionally, but if WEFAC item 3
-                    // for the well is false (it defaults to true) then we should NOT use
-                    // the efficiency factor. Fixing this requires not only changing the
-                    // code here, but also:
-                    //    - Adding a member to the well for this flag, and setting it in Schedule::handleWEFAC().
-                    //    - Making the wells' maximum flows (i.e. not time-averaged by using a efficiency factor)
-                    //      available and using those (for wells with WEFAC(3) true only) when accumulating group
-                    //      rates, but ONLY for network calculations.
-                    const double efficiency = well.getEfficiencyFactor();
-                    node_inflows[node][BlackoilPhases::Vapour] += well_state.getALQ(wellname) * efficiency;
+        std::map<std::string, double> node_pressures;
+        auto roots = network.roots();
+        for (const auto& root : roots) {
+            // Fixed pressure nodes of the network are the roots of trees.
+            // Leaf nodes must correspond to groups in the group structure.
+            // Let us first find all leaf nodes of the network. We also
+            // create a vector of all nodes, ordered so that a child is
+            // always after its parent.
+            std::stack<std::string> children;
+            std::set<std::string> leaf_nodes;
+            std::vector<std::string> root_to_child_nodes;
+            //children.push(network.root().name());
+            children.push(root.get().name());
+            while (!children.empty()) {
+                const auto node = children.top();
+                children.pop();
+                root_to_child_nodes.push_back(node);
+                auto branches = network.downtree_branches(node);
+                if (branches.empty()) {
+                    leaf_nodes.insert(node);
+                }
+                for (const auto& branch : branches) {
+                    children.push(branch.downtree_node());
                 }
             }
-        }
+            assert(children.empty());
 
-        // Accumulate in the network, towards the roots. Note that a
-        // root (i.e. fixed pressure node) can still be contributing
-        // flow towards other nodes in the network, i.e.  a node is
-        // the root of a subtree.
-        auto child_to_root_nodes = root_to_child_nodes;
-        std::reverse(child_to_root_nodes.begin(), child_to_root_nodes.end());
-        for (const auto& node : child_to_root_nodes) {
-            const auto upbranch = network.uptree_branch(node);
-            if (upbranch) {
-                // Add downbranch rates to upbranch.
-                std::vector<double>& up = node_inflows[(*upbranch).uptree_node()];
-                const std::vector<double>& down = node_inflows[node];
-                if (up.empty()) {
-                    up = down;
+            // Starting with the leaf nodes of the network, get the flow rates
+            // from the corresponding groups.
+            std::map<std::string, std::vector<double>> node_inflows;
+            for (const auto& node : leaf_nodes) {
+                node_inflows[node] = group_state.production_rates(node);
+                // Add the ALQ amounts to the gas rates if requested.
+                if (network.node(node).add_gas_lift_gas()) {
+                    const auto& group = schedule.getGroup(node, report_time_step);
+                    for (const std::string& wellname : group.wells()) {
+                        const Well& well = schedule.getWell(wellname, report_time_step);
+                        if (well.isInjector()) continue;
+                        // Here we use the efficiency unconditionally, but if WEFAC item 3
+                        // for the well is false (it defaults to true) then we should NOT use
+                        // the efficiency factor. Fixing this requires not only changing the
+                        // code here, but also:
+                        //    - Adding a member to the well for this flag, and setting it in Schedule::handleWEFAC().
+                        //    - Making the wells' maximum flows (i.e. not time-averaged by using a efficiency factor)
+                        //      available and using those (for wells with WEFAC(3) true only) when accumulating group
+                        //      rates, but ONLY for network calculations.
+                        const double efficiency = well.getEfficiencyFactor();
+                        node_inflows[node][BlackoilPhases::Vapour] += well_state.getALQ(wellname) * efficiency;
+                    }
+                }
+            }
+
+            // Accumulate in the network, towards the roots. Note that a
+            // root (i.e. fixed pressure node) can still be contributing
+            // flow towards other nodes in the network, i.e.  a node is
+            // the root of a subtree.
+            auto child_to_root_nodes = root_to_child_nodes;
+            std::reverse(child_to_root_nodes.begin(), child_to_root_nodes.end());
+            for (const auto& node : child_to_root_nodes) {
+                const auto upbranch = network.uptree_branch(node);
+                if (upbranch) {
+                    // Add downbranch rates to upbranch.
+                    std::vector<double>& up = node_inflows[(*upbranch).uptree_node()];
+                    const std::vector<double>& down = node_inflows[node];
+                    if (up.empty()) {
+                        up = down;
+                    } else {
+                        assert (up.size() == down.size());
+                        for (std::size_t ii = 0; ii < up.size(); ++ii) {
+                            up[ii] += down[ii];
+                        }
+                    }
+                }
+            }
+
+            // Going the other way (from roots to leafs), calculate the pressure
+            // at each node using VFP tables and rates.
+            //std::map<std::string, double> node_pressures;
+            for (const auto& node : root_to_child_nodes) {
+                auto press = network.node(node).terminal_pressure();
+                if (press) {
+                    node_pressures[node] = *press;
                 } else {
-                    assert (up.size() == down.size());
-                    for (std::size_t ii = 0; ii < up.size(); ++ii) {
-                        up[ii] += down[ii];
+                    const auto upbranch = network.uptree_branch(node);
+                    assert(upbranch);
+                    const double up_press = node_pressures[(*upbranch).uptree_node()];
+                    const auto vfp_table = (*upbranch).vfp_table();
+                    if (vfp_table) {
+                        // The rates are here positive, but the VFP code expects the
+                        // convention that production rates are negative, so we must
+                        // take a copy and flip signs.
+                        auto rates = node_inflows[node];
+                        for (auto& r : rates) { r *= -1.0; }
+                        assert(rates.size() == 3);
+                        const double alq = 0.0; // TODO: Do not ignore ALQ
+                        node_pressures[node] = vfp_prod_props.bhp(*vfp_table,
+                                                                rates[BlackoilPhases::Aqua],
+                                                                rates[BlackoilPhases::Liquid],
+                                                                rates[BlackoilPhases::Vapour],
+                                                                up_press,
+                                                                alq,
+                                                                0.0, //explicit_wfr
+                                                                0.0, //explicit_gfr
+                                                                false); //use_expvfp we dont support explicit lookup
+    #define EXTRA_DEBUG_NETWORK 0
+    #if EXTRA_DEBUG_NETWORK
+                        std::ostringstream oss;
+                        oss << "parent: " << (*upbranch).uptree_node() << "  child: " << node
+                            << "  rates = [ " << rates[0]*86400 << ", " << rates[1]*86400 << ", " << rates[2]*86400 << " ]"
+                            << "  p(parent) = " << up_press/1e5 << "  p(child) = " << node_pressures[node]/1e5 << std::endl;
+                        OpmLog::debug(oss.str());
+    #endif
+                    } else {
+                        // Table number specified as 9999 in the deck, no pressure loss.
+                        node_pressures[node] = up_press;
                     }
                 }
             }
         }
-
-        // Going the other way (from roots to leafs), calculate the pressure
-        // at each node using VFP tables and rates.
-        std::map<std::string, double> node_pressures;
-        for (const auto& node : root_to_child_nodes) {
-            auto press = network.node(node).terminal_pressure();
-            if (press) {
-                node_pressures[node] = *press;
-            } else {
-                const auto upbranch = network.uptree_branch(node);
-                assert(upbranch);
-                const double up_press = node_pressures[(*upbranch).uptree_node()];
-                const auto vfp_table = (*upbranch).vfp_table();
-                if (vfp_table) {
-                    // The rates are here positive, but the VFP code expects the
-                    // convention that production rates are negative, so we must
-                    // take a copy and flip signs.
-                    auto rates = node_inflows[node];
-                    for (auto& r : rates) { r *= -1.0; }
-                    assert(rates.size() == 3);
-                    const double alq = 0.0; // TODO: Do not ignore ALQ
-                    node_pressures[node] = vfp_prod_props.bhp(*vfp_table,
-                                                              rates[BlackoilPhases::Aqua],
-                                                              rates[BlackoilPhases::Liquid],
-                                                              rates[BlackoilPhases::Vapour],
-                                                              up_press,
-                                                              alq,
-                                                              0.0, //explicit_wfr
-                                                              0.0, //explicit_gfr
-                                                              false); //use_expvfp we dont support explicit lookup
-#define EXTRA_DEBUG_NETWORK 0
-#if EXTRA_DEBUG_NETWORK
-                    std::ostringstream oss;
-                    oss << "parent: " << (*upbranch).uptree_node() << "  child: " << node
-                        << "  rates = [ " << rates[0]*86400 << ", " << rates[1]*86400 << ", " << rates[2]*86400 << " ]"
-                        << "  p(parent) = " << up_press/1e5 << "  p(child) = " << node_pressures[node]/1e5 << std::endl;
-                    OpmLog::debug(oss.str());
-#endif
-                } else {
-                    // Table number specified as 9999 in the deck, no pressure loss.
-                    node_pressures[node] = up_press;
-                }
-            }
-        }
-
         return node_pressures;
     }
 
@@ -1064,130 +1075,6 @@ namespace WellGroupHelpers
         return num_wells;
     }
 
-    FractionCalculator::FractionCalculator(const Schedule& schedule,
-                                           const WellState& well_state,
-                                           const GroupState& group_state,
-                                           const int report_step,
-                                           const GuideRate* guide_rate,
-                                           const GuideRateModel::Target target,
-                                           const PhaseUsage& pu,
-                                           const bool is_producer,
-                                           const Phase injection_phase)
-        : schedule_(schedule)
-        , well_state_(well_state)
-        , group_state_(group_state)
-        , report_step_(report_step)
-        , guide_rate_(guide_rate)
-        , target_(target)
-        , pu_(pu)
-        , is_producer_(is_producer)
-        , injection_phase_(injection_phase)
-    {
-    }
-    double FractionCalculator::fraction(const std::string& name,
-                                        const std::string& control_group_name,
-                                        const bool always_include_this)
-    {
-        double fraction = 1.0;
-        std::string current = name;
-        while (current != control_group_name) {
-            fraction *= localFraction(current, always_include_this ? name : "");
-            current = parent(current);
-        }
-        return fraction;
-    }
-    double FractionCalculator::localFraction(const std::string& name, const std::string& always_included_child)
-    {
-        const double my_guide_rate = guideRate(name, always_included_child);
-        const Group& parent_group = schedule_.getGroup(parent(name), report_step_);
-        const double total_guide_rate = guideRateSum(parent_group, always_included_child);
-
-        // the total guide gate is the same as my_guide rate
-        // the well/group is probably on its own, i.e. return 1
-        // even is its guide_rate is zero
-        const double guide_rate_epsilon = 1e-12;
-        if ( std::abs(my_guide_rate - total_guide_rate) < guide_rate_epsilon )
-            return 1.0;
-
-        assert(total_guide_rate > my_guide_rate);
-        return my_guide_rate / total_guide_rate;
-    }
-    std::string FractionCalculator::parent(const std::string& name)
-    {
-        if (schedule_.hasWell(name)) {
-            return schedule_.getWell(name, report_step_).groupName();
-        } else {
-            return schedule_.getGroup(name, report_step_).parent();
-        }
-    }
-    double FractionCalculator::guideRateSum(const Group& group, const std::string& always_included_child)
-    {
-        double total_guide_rate = 0.0;
-        for (const std::string& child_group : group.groups()) {
-            bool included = (child_group == always_included_child);
-            if (is_producer_) {
-                const auto ctrl = this->group_state_.production_control(child_group);
-                included = included || (ctrl == Group::ProductionCMode::FLD) || (ctrl == Group::ProductionCMode::NONE);
-            } else {
-                const auto ctrl = this->group_state_.injection_control(child_group, this->injection_phase_);
-                included = included || (ctrl == Group::InjectionCMode::FLD) || (ctrl == Group::InjectionCMode::NONE);
-            }
-            if (included) {
-                total_guide_rate += guideRate(child_group, always_included_child);
-            }
-        }
-        for (const std::string& child_well : group.wells()) {
-            bool included = (child_well == always_included_child);
-            if (is_producer_) {
-                included = included || well_state_.isProductionGrup(child_well);
-            } else {
-                included = included || well_state_.isInjectionGrup(child_well);
-            }
-
-            if (included) {
-                total_guide_rate += guideRate(child_well, always_included_child);
-            }
-        }
-        return total_guide_rate;
-    }
-    double FractionCalculator::guideRate(const std::string& name, const std::string& always_included_child)
-    {
-        if (schedule_.hasWell(name, report_step_)) {
-            return getGuideRate(name, schedule_, well_state_, group_state_,
-                                report_step_, guide_rate_, target_, pu_);
-        } else {
-            if (groupControlledWells(name, always_included_child) > 0) {
-                if (is_producer_ && guide_rate_->has(name)) {
-                    return guide_rate_->get(name, target_, getGroupRateVector(name));
-                } else if (!is_producer_ && guide_rate_->has(name, injection_phase_)) {
-                    return guide_rate_->get(name, injection_phase_);
-                } else {
-                    // We are a group, with default guide rate.
-                    // Compute guide rate by accumulating our children's guide rates.
-                    const Group& group = schedule_.getGroup(name, report_step_);
-                    const double eff = group.getGroupEfficiencyFactor();
-                    return eff * guideRateSum(group, always_included_child);
-                }
-            } else {
-                // No group-controlled subordinate wells.
-                return 0.0;
-            }
-        }
-    }
-    int FractionCalculator::groupControlledWells(const std::string& group_name,
-                                                 const std::string& always_included_child)
-    {
-        return ::Opm::WellGroupHelpers::groupControlledWells(
-                                                             schedule_, well_state_, this->group_state_, report_step_, group_name, always_included_child, is_producer_, injection_phase_);
-    }
-
-    GuideRate::RateVector FractionCalculator::getGroupRateVector(const std::string& group_name)
-    {
-        assert(is_producer_);
-        return getProductionGroupRateVector(this->group_state_, this->pu_, group_name);
-    }
-
-
     std::vector<std::string>
     groupChainTopBot(const std::string& bottom, const std::string& top, const Schedule& schedule, const int report_step)
     {
@@ -1308,7 +1195,7 @@ namespace WellGroupHelpers
         const auto chain = groupChainTopBot(name, group.name(), schedule, reportStepIdx);
         // Because 'name' is the last of the elements, and not an ancestor, we subtract one below.
         const std::size_t num_ancestors = chain.size() - 1;
-        // we need to find out the level where the current well is applied to the local reduction 
+        // we need to find out the level where the current well is applied to the local reduction
         std::size_t local_reduction_level = 0;
         for (std::size_t ii = 1; ii < num_ancestors; ++ii) {
             const int num_gr_ctrl = groupControlledWells(schedule,
@@ -1513,16 +1400,114 @@ namespace WellGroupHelpers
         return std::make_pair(current_rate > target_rate, scale);
     }
 
+    std::pair<std::optional<std::string>, double>
+    worstOffendingWell(const Group& group,
+                       const Schedule& schedule,
+                       const int reportStepIdx,
+                       const Group::ProductionCMode& offendedControl,
+                       const PhaseUsage& pu,
+                       const Parallel::Communication& comm,
+                       const WellState& wellState,
+                       DeferredLogger& deferred_logger)
+    {
+        std::pair<std::optional<std::string>, double> offending_well {std::nullopt, 0.0};
+        for (const std::string& child_group : group.groups()) {
+            const auto& this_group = schedule.getGroup(child_group, reportStepIdx);
+            const auto & offending_well_this = worstOffendingWell(this_group,
+                                                                 schedule,
+                                                                 reportStepIdx,
+                                                                 offendedControl,
+                                                                 pu,
+                                                                 comm,
+                                                                 wellState,
+                                                                 deferred_logger);
+            if (offending_well_this.second > offending_well.second) {
+                offending_well = offending_well_this;
+            }
+        }    
+
+        for (const std::string& child_well : group.wells()) {
+
+            const auto& well_index = wellState.index(child_well);
+            double violating_rate = 0.0;
+            double prefered_rate = 0.0;
+            if (well_index.has_value() && wellState.wellIsOwned(well_index.value(), child_well))
+            {
+                const auto& ws = wellState.well(child_well);
+                switch (offendedControl){
+                    case Group::ProductionCMode::ORAT:
+                        violating_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Liquid]];
+                        break;
+                    case Group::ProductionCMode::GRAT:
+                        violating_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Vapour]];
+                        break;
+                    case Group::ProductionCMode::WRAT:
+                        violating_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Aqua]];
+                        break;
+                    case Group::ProductionCMode::LRAT:
+                        assert(pu.phase_used[BlackoilPhases::Liquid]);
+                        assert(pu.phase_used[BlackoilPhases::Aqua]);
+                        violating_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Liquid]] +
+                                         ws.surface_rates[pu.phase_pos[BlackoilPhases::Aqua]];
+                        break;
+                    case Group::ProductionCMode::RESV:
+                        for (int p = 0; p < pu.num_phases; ++p) {
+                            violating_rate += ws.reservoir_rates[p];
+                        }
+                        break;
+                    case Group::ProductionCMode::NONE:
+                        break;
+                    case Group::ProductionCMode::FLD:
+                        break;
+                    case Group::ProductionCMode::PRBL:
+                        OPM_DEFLOG_THROW(std::runtime_error,
+                                         "Group " + group.name() +
+                                         "GroupProductionCMode PRBL not implemented", deferred_logger);
+                        break;    
+                    case Group::ProductionCMode::CRAT:
+                        OPM_DEFLOG_THROW(std::runtime_error,
+                                         "Group " + group.name() +
+                                         "GroupProductionCMode CRAT not implemented", deferred_logger);
+                        break;    
+                }
+                const auto preferred_phase = schedule.getWell(child_well, reportStepIdx).getPreferredPhase();
+                 switch (preferred_phase) {
+                    case Phase::OIL:
+                        prefered_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Liquid]];
+                        break;
+                    case Phase::GAS:
+                        prefered_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Vapour]];
+                        break;
+                    case Phase::WATER:
+                        prefered_rate = ws.surface_rates[pu.phase_pos[BlackoilPhases::Aqua]];
+                        break;
+                    default:
+                        // No others supported.
+                        break;
+                    }
+            }
+            violating_rate = comm.sum(violating_rate);
+            if (violating_rate < 0 ) { // only check producing wells
+                prefered_rate = comm.sum(prefered_rate);
+                double fraction = prefered_rate < -1e-16 ? violating_rate / prefered_rate : 1.0;
+                if ( fraction > offending_well.second) {
+                        offending_well = {child_well, fraction};
+                }
+            }
+        }
+        return offending_well; 
+    }
+
     template <class AverageRegionalPressureType>
     void setRegionAveragePressureCalculator(const Group& group,
                                             const Schedule& schedule,
                                             const int reportStepIdx,
                                             const FieldPropsManager& fp,
                                             const PhaseUsage& pu,
-                                            std::map<std::string, std::unique_ptr<AverageRegionalPressureType>>& regionalAveragePressureCalculator) 
+                                            std::map<std::string, std::unique_ptr<AverageRegionalPressureType>>& regionalAveragePressureCalculator)
     {
         for (const std::string& groupName : group.groups()) {
-            setRegionAveragePressureCalculator( schedule.getGroup(groupName, reportStepIdx), schedule, 
+            setRegionAveragePressureCalculator( schedule.getGroup(groupName, reportStepIdx), schedule,
                                                 reportStepIdx, fp, pu, regionalAveragePressureCalculator);
         }
         const auto& gpm = group.gpmaint();
@@ -1540,7 +1525,6 @@ namespace WellGroupHelpers
         }
     }
 
-    template <class Comm>
     void updateGuideRates(const Group& group,
                           const Schedule& schedule,
                           const SummaryState& summary_state,
@@ -1549,7 +1533,7 @@ namespace WellGroupHelpers
                           const double sim_time,
                           WellState& well_state,
                           const GroupState& group_state,
-                          const Comm& comm,
+                          const Parallel::Communication& comm,
                           GuideRate* guide_rate,
                           std::vector<double>& pot,
                           Opm::DeferredLogger& deferred_logger)
@@ -1560,7 +1544,6 @@ namespace WellGroupHelpers
         updateGuideRatesForWells(schedule, pu, report_step, sim_time, well_state, comm, guide_rate);
     }
 
-    template <class Comm>
     void updateGuideRateForProductionGroups(const Group& group,
                                             const Schedule& schedule,
                                             const PhaseUsage& pu,
@@ -1568,7 +1551,7 @@ namespace WellGroupHelpers
                                             const double& simTime,
                                             WellState& wellState,
                                             const GroupState& group_state,
-                                            const Comm& comm,
+                                            const Parallel::Communication& comm,
                                             GuideRate* guideRate,
                                             std::vector<double>& pot)
     {
@@ -1639,13 +1622,12 @@ namespace WellGroupHelpers
         guideRate->compute(group.name(), reportStepIdx, simTime, oilPot, gasPot, waterPot);
     }
 
-    template <class Comm>
     void updateGuideRatesForWells(const Schedule& schedule,
                                   const PhaseUsage& pu,
                                   const int reportStepIdx,
                                   const double& simTime,
                                   const WellState& wellState,
-                                  const Comm& comm,
+                                  const Parallel::Communication& comm,
                                   GuideRate* guideRate)
     {
         for (const auto& well : schedule.getWells(reportStepIdx)) {
@@ -1691,40 +1673,6 @@ namespace WellGroupHelpers
                                             const FieldPropsManager&,
                                             const PhaseUsage&,
                                             AvgPMap&);
-
-template
-void updateGuideRateForProductionGroups<Parallel::Communication>(const Group& group,
-                                                                 const Schedule& schedule,
-                                                                 const PhaseUsage& pu,
-                                                                 const int reportStepIdx,
-                                                                 const double& simTime,
-                                                                 WellState& wellState,
-                                                                 const GroupState& group_state,
-                                                                 const Parallel::Communication& comm,
-                                                                 GuideRate* guideRate,
-                                                                 std::vector<double>& pot);
-template
-void updateGuideRatesForWells<Parallel::Communication>(const Schedule& schedule,
-                                                       const PhaseUsage& pu,
-                                                       const int reportStepIdx,
-                                                       const double& simTime,
-                                                       const WellState& wellState,
-                                                       const Parallel::Communication& comm,
-                                                       GuideRate* guideRate);
-template
-void updateGuideRates<Parallel::Communication>(const Group& group,
-                                               const Schedule& schedule,
-                                               const SummaryState& summary_state,
-                                               const PhaseUsage& pu,
-                                               const int report_step,
-                                               const double sim_time,
-                                               WellState& well_state,
-                                               const GroupState& group_state,
-                                               const Parallel::Communication& comm,
-                                               GuideRate* guide_rate,
-                                               std::vector<double>& pot,
-                                               DeferredLogger&);
-
 } // namespace WellGroupHelpers
 
 } // namespace Opm

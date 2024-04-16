@@ -69,16 +69,60 @@ void
 WellInterfaceFluidSystem<FluidSystem>::
 calculateReservoirRates(SingleWellState& ws) const
 {
-    const int fipreg = 0; // not considering the region for now
     const int np = number_of_phases_;
+    const auto& pu = this->phaseUsage();
+    // Calculate reservoir rates from average pressure and temperature
+    if ( !pu.has_energy || this->wellEcl().isProducer()) {
+        const int fipreg = 0; // not considering the region for now
+        this->rateConverter_
+            .calcReservoirVoidageRates(fipreg,
+                                    this->pvtRegionIdx_,
+                                    ws.surface_rates,
+                                    ws.reservoir_rates);
 
+        // Compute total connection reservoir rate CVPR/CVIR
+        auto& perf_data = ws.perf_data;
+        const auto num_perf_well = perf_data.size();
+        const auto& surf_perf_rates = perf_data.phase_rates;
+        for (auto i = 0*num_perf_well; i < num_perf_well; ++i) {
+            const auto surface_rates_perf = std::vector<double>
+                { surf_perf_rates.begin() + (i + 0)*np ,
+                surf_perf_rates.begin() + (i + 1)*np };
+
+            std::vector<double> voidage_rates_perf(np, 0.0);
+            this->rateConverter_
+                .calcReservoirVoidageRates(fipreg,
+                                        this->pvtRegionIdx_,
+                                        surface_rates_perf,
+                                        voidage_rates_perf);
+
+            perf_data.rates[i] =
+                std::accumulate(voidage_rates_perf.begin(),
+                                voidage_rates_perf.end(), 0.0);
+        }
+        return;
+    }
+    // For injectors in a thermal case we convert using the well bhp and temperature
+    // Assume pure phases in the injector
+    const auto saltConc = 0.0;
+    auto rsMax = 0.0;
+    auto rvMax = 0.0;
+    auto rswMax = 0.0;
+    auto rvwMax = 0.0;
     this->rateConverter_
-        .calcReservoirVoidageRates(fipreg,
-                                   this->pvtRegionIdx_,
-                                   ws.surface_rates,
-                                   ws.reservoir_rates);
+        .calcReservoirVoidageRates(this->pvtRegionIdx_,
+                                    ws.bhp,
+                                    rsMax,
+                                    rvMax,
+                                    rswMax,
+                                    rvwMax,
+                                    ws.temperature,
+                                    saltConc,
+                                    ws.surface_rates,
+                                    ws.reservoir_rates);
 
-    // Compute total connection reservoir rate CVPR/CVIR
+
+    // Compute total connection reservoir rate CVIR
     auto& perf_data = ws.perf_data;
     const auto num_perf_well = perf_data.size();
     const auto& surf_perf_rates = perf_data.phase_rates;
@@ -87,10 +131,19 @@ calculateReservoirRates(SingleWellState& ws) const
             { surf_perf_rates.begin() + (i + 0)*np ,
               surf_perf_rates.begin() + (i + 1)*np };
 
+        const auto pressure = perf_data.pressure[i];
+        // Calculate other per-phase dynamic quantities.
+        const auto temperature = ws.temperature; // Assume same  temperature in the well
         std::vector<double> voidage_rates_perf(np, 0.0);
         this->rateConverter_
-            .calcReservoirVoidageRates(fipreg,
-                                       this->pvtRegionIdx_,
+            .calcReservoirVoidageRates(this->pvtRegionIdx_,
+                                       pressure,
+                                       rsMax,
+                                       rvMax,
+                                       rswMax, // Rsw
+                                       rvwMax, // Rvw
+                                       temperature,
+                                       saltConc,
                                        surface_rates_perf,
                                        voidage_rates_perf);
 
@@ -105,7 +158,9 @@ bool
 WellInterfaceFluidSystem<FluidSystem>::
 checkIndividualConstraints(SingleWellState& ws,
                            const SummaryState& summaryState,
-                           DeferredLogger& deferred_logger) const
+                           DeferredLogger& deferred_logger,
+                           const std::optional<Well::InjectionControls>& inj_controls,
+                           const std::optional<Well::ProductionControls>& prod_controls) const
 {
     auto rRates = [this](const int fipreg,
                          const int pvtRegion,
@@ -119,7 +174,7 @@ checkIndividualConstraints(SingleWellState& ws,
     return WellConstraints(*this).
             checkIndividualConstraints(ws, summaryState, rRates,
                                        this->operability_status_.thp_limit_violated_but_not_switched,
-                                       deferred_logger);
+                                       deferred_logger, inj_controls, prod_controls);
 }
 
 template <typename FluidSystem>
@@ -169,7 +224,7 @@ checkConstraints(WellState& well_state,
 template<typename FluidSystem>
 int
 WellInterfaceFluidSystem<FluidSystem>::
-flowPhaseToEbosPhaseIdx(const int phaseIdx) const
+flowPhaseToModelPhaseIdx(const int phaseIdx) const
 {
     const auto& pu = this->phaseUsage();
     if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx) && pu.phase_pos[Water] == phaseIdx)

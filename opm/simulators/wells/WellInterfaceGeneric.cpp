@@ -174,6 +174,11 @@ const Well& WellInterfaceGeneric::wellEcl() const
     return well_ecl_;
 }
 
+Well& WellInterfaceGeneric::wellEcl()
+{
+    return well_ecl_;
+}
+
 const PhaseUsage& WellInterfaceGeneric::phaseUsage() const
 {
     assert(phase_usage_ != nullptr);
@@ -344,12 +349,25 @@ void WellInterfaceGeneric::setVFPProperties(const VFPProperties* vfp_properties_
     vfp_properties_ = vfp_properties_arg;
 }
 
-void WellInterfaceGeneric::setPrevSurfaceRates(WellState& well_state, 
+void WellInterfaceGeneric::setPrevSurfaceRates(WellState& well_state,
                                                const WellState& prev_well_state) const
     {
         auto& ws = well_state.well(this->index_of_well_);
-        if (!this->changedToOpenThisStep()){
-            ws.prev_surface_rates = prev_well_state.well(this->index_of_well_).surface_rates;
+        auto& ws_prev = prev_well_state.well(this->index_of_well_);
+        // The logic here is a bit fragile:
+        // We need non-zero prev_surface_rates for the purpose of providing explicit fractions
+        // (if needed) for vfp interpolation.
+        // We assume that current surface rates either are initialized from previous step
+        // or (if newly opened) from updateWellStateRates. This is fine unless well was
+        // stopped in previous step in which case it's rates will be zero. In this case,
+        // we select the previous rates of the previous well state (and hope for the best).
+        const bool zero_rates = std::all_of(ws.surface_rates.begin(), ws.surface_rates.end(),
+                [](double rate) {
+                    return rate == 0.; // TODO: should we use a threshhold for comparison?
+                } );
+
+        if (zero_rates) {
+            ws.prev_surface_rates = ws_prev.prev_surface_rates;
         } else {
             ws.prev_surface_rates = ws.surface_rates;
         }
@@ -552,6 +570,11 @@ bool WellInterfaceGeneric::stopppedOrZeroRateTarget(const SummaryState& summary_
 
 }
 
+void WellInterfaceGeneric::resetWellOperability()
+{
+    this->operability_status_.resetOperability();
+}
+
 double WellInterfaceGeneric::wmicrobes_() const
 {
     auto injectorType = this->well_ecl_.injectorType();
@@ -724,6 +747,49 @@ checkNegativeWellPotentials(std::vector<double>& well_potentials,
                                 ": has negative potentials and is not operable";
         deferred_logger.warning("NEGATIVE_POTENTIALS_INOPERABLE", msg);
     }
+}
+
+void WellInterfaceGeneric::
+prepareForPotentialCalculations(const SummaryState& summary_state,
+                                WellState& well_state, 
+                                Well::InjectionControls& inj_controls,
+                                Well::ProductionControls& prod_controls) const
+{
+    const bool has_thp = this->wellHasTHPConstraints(summary_state);
+    auto& ws = well_state.well(this->index_of_well_);
+    // Modify control (only pressure constraints) and set new target if needed.
+    // Also set value for current target in state
+    if (this->isInjector()) {
+        inj_controls.clearControls();
+        inj_controls.addControl(Well::InjectorCMode::BHP);
+        if (has_thp){
+            inj_controls.addControl(Well::InjectorCMode::THP);
+        }
+        if (!(ws.injection_cmode == Well::InjectorCMode::BHP)){
+            if (has_thp){
+                ws.injection_cmode = Well::InjectorCMode::THP;
+                ws.thp = this->getTHPConstraint(summary_state);
+            } else {
+                ws.injection_cmode = Well::InjectorCMode::BHP;
+                ws.bhp = inj_controls.bhp_limit;
+            }
+        } 
+    } else { // producer
+        prod_controls.clearControls();
+        prod_controls.addControl(Well::ProducerCMode::BHP);
+        if (has_thp){
+            prod_controls.addControl(Well::ProducerCMode::THP);
+        }
+        if (!(ws.production_cmode == Well::ProducerCMode::BHP)){
+            if (has_thp){
+                ws.production_cmode = Well::ProducerCMode::THP;
+                ws.thp = this->getTHPConstraint(summary_state);
+            } else {
+                ws.production_cmode = Well::ProducerCMode::BHP;
+                ws.bhp = prod_controls.bhp_limit;
+            }
+        } 
+    }    
 }
 
 } // namespace Opm

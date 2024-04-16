@@ -45,22 +45,6 @@
 #include <vector>
 
 namespace {
-    std::string to_string(const Opm::ConvergenceReport::ReservoirFailure::Type t)
-    {
-        using Type = Opm::ConvergenceReport::ReservoirFailure::Type;
-
-        const auto type_strings = std::unordered_map<Type, std::string> {
-            { Type::Invalid    , "Invalid" },
-            { Type::MassBalance, "MB"      },
-            { Type::Cnv        , "CNV"     },
-        };
-
-        auto strPos = type_strings.find(t);
-        assert ((strPos != type_strings.end()) &&
-                "Unsupported convergence metric type");
-
-        return strPos->second;
-    }
 
     std::string
     formatMetricColumn(const Opm::ConvergenceOutputThread::ComponentToPhaseName& getPhaseName,
@@ -112,6 +96,7 @@ namespace {
         return maxChar;
     }
 
+
     void writeConvergenceRequest(std::ostream&                                           os,
                                  const Opm::ConvergenceOutputThread::ConvertToTimeUnits& convertTime,
                                  std::string::size_type                                  colSize,
@@ -134,7 +119,13 @@ namespace {
             }
 
             os << std::right << std::setw(colSize + 1)
-               << (report.wellFailed() ? "FAIL" : "CONV") << '\n';
+               << (report.wellFailed() ? "FAIL" : "CONV");
+            if (report.wellFailed()) {
+                for (const auto& wf : report.wellFailures()) {
+                    os << " " << to_string(wf);
+                }
+            }
+            os << '\n';
 
             ++iter;
         }

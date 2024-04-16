@@ -32,14 +32,14 @@ namespace Opm
 class DeferredLogger;
 class GroupState;
 template<class Scalar, int numWellEq, int numEq> class MultisegmentWellEquations;
-template<class FluidSystem, class Indices, class Scalar> class MultisegmentWellPrimaryVariables;
+template<class FluidSystem, class Indices> class MultisegmentWellPrimaryVariables;
 class Schedule;
 class SummaryState;
-template<class FluidSystem, class Indices, class Scalar> class WellInterfaceIndices;
+template<class FluidSystem, class Indices> class WellInterfaceIndices;
 class WellState;
 
 //! \brief Class handling assemble of the equation system for MultisegmentWell.
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 class MultisegmentWellAssemble
 {
     static constexpr bool has_water = (Indices::waterSwitchIdx >= 0);
@@ -59,12 +59,13 @@ class MultisegmentWellAssemble
 
 public:
     static constexpr int numWellEq = Indices::numPhases+1;
+    using Scalar = typename FluidSystem::Scalar;
     using Equations = MultisegmentWellEquations<Scalar,numWellEq,Indices::numEq>;
-    using PrimaryVariables = MultisegmentWellPrimaryVariables<FluidSystem,Indices,Scalar>;
+    using PrimaryVariables = MultisegmentWellPrimaryVariables<FluidSystem,Indices>;
     using EvalWell = DenseAd::Evaluation<Scalar, numWellEq+Indices::numEq>;
 
     //! \brief Constructor initializes reference to well.
-    MultisegmentWellAssemble(const WellInterfaceIndices<FluidSystem,Indices,Scalar>& well)
+    MultisegmentWellAssemble(const WellInterfaceIndices<FluidSystem,Indices>& well)
         : well_(well)
     {}
 
@@ -80,22 +81,23 @@ public:
                            Equations& eqns,
                            DeferredLogger& deferred_logger) const;
 
+    //! \brief Assemble piece of the acceleration term
+    void assembleAccelerationTerm(const int seg_target,
+                                  const int seg,
+                                  const int seg_upwing,
+                                  const EvalWell& accelerationTerm,
+                                  Equations& eqns1) const;
 
-    //! \brief Assemble pressure loss term.
-    void assemblePressureLoss(const int seg,
-                              const int seg_upwind,
-                              const EvalWell& accelerationPressureLoss,
-                              Equations& eqns) const;
+    //! \brief Assemble hydraulic pressure term
+    void assembleHydroPressureLoss(const int seg,
+                                   const int seg_density,
+                                   const EvalWell& hydro_pressure_drop_seg,
+                                   Equations& eqns1) const;
 
-
-    void assembleHydroPressureLoss(const int seg, 
-                                   const int seg_density, 
-                                   const EvalWell& hydro_pressure_drop_seg, 
-                                   Equations& eqns1) const;                                   
-
-    void assemblePressureEqExtraDerivatives(const int seg, 
-                                            const int seg_upwind, 
-                                            const EvalWell& extra_derivatives, 
+    //! \brief Assemble additional derivatives due to reverse flow
+    void assemblePressureEqExtraDerivatives(const int seg,
+                                            const int seg_upwind,
+                                            const EvalWell& extra_derivatives,
                                             Equations& eqns1) const;
 
     //! \brief Assemble pressure terms.
@@ -142,7 +144,7 @@ public:
                                Equations& eqns) const;
 
 private:
-    const WellInterfaceIndices<FluidSystem,Indices,Scalar>& well_; //!< Reference to well
+    const WellInterfaceIndices<FluidSystem,Indices>& well_; //!< Reference to well
 };
 
 }

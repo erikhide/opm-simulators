@@ -24,18 +24,13 @@
 #ifndef OPM_BLACKOILWELLMODEL_HEADER_INCLUDED
 #define OPM_BLACKOILWELLMODEL_HEADER_INCLUDED
 
-#include <ebos/eclproblem.hh>
 #include <opm/common/OpmLog/OpmLog.hpp>
 
-#include <cassert>
 #include <cstddef>
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
-#include <tuple>
-#include <unordered_map>
 #include <vector>
 
 #include <opm/input/eclipse/Schedule/Group/Group.hpp>
@@ -43,15 +38,19 @@
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellTestState.hpp>
 
+#include <opm/models/discretization/common/baseauxiliarymodule.hh>
+
 #include <opm/simulators/flow/countGlobalCells.hpp>
+#include <opm/simulators/flow/FlowBaseVanguard.hpp>
 #include <opm/simulators/flow/SubDomain.hpp>
+
+#include <opm/simulators/linalg/matrixblock.hh>
 
 #include <opm/simulators/wells/BlackoilWellModelGeneric.hpp>
 #include <opm/simulators/wells/BlackoilWellModelGuideRates.hpp>
 #include <opm/simulators/wells/GasLiftGroupInfo.hpp>
 #include <opm/simulators/wells/GasLiftSingleWell.hpp>
 #include <opm/simulators/wells/GasLiftSingleWellGeneric.hpp>
-#include <opm/simulators/wells/GasLiftStage2.hpp>
 #include <opm/simulators/wells/GasLiftWellState.hpp>
 #include <opm/simulators/wells/MultisegmentWell.hpp>
 #include <opm/simulators/wells/ParallelWBPCalculation.hpp>
@@ -97,7 +96,7 @@ namespace Opm {
         {
         public:
             // ---------      Types      ---------
-            typedef BlackoilModelParametersEbos<TypeTag> ModelParameters;
+            using ModelParameters = BlackoilModelParameters<TypeTag>;
 
             using Grid = GetPropType<TypeTag, Properties::Grid>;
             using EquilGrid = GetPropType<TypeTag, Properties::EquilGrid>;
@@ -144,7 +143,7 @@ namespace Opm {
 
             using Domain = SubDomain<Grid>;
 
-            BlackoilWellModel(Simulator& ebosSimulator);
+            BlackoilWellModel(Simulator& simulator);
 
             void init();
             void initWellContainer(const int reportStepIdx) override;
@@ -197,7 +196,7 @@ namespace Opm {
             void beginEpisode()
             {
                 OPM_TIMEBLOCK(beginEpsiode);
-                beginReportStep(ebosSimulator_.episodeIndex());
+                beginReportStep(simulator_.episodeIndex());
             }
 
             void beginTimeStep();
@@ -205,8 +204,8 @@ namespace Opm {
             void beginIteration()
             {
                 OPM_TIMEBLOCK(beginIteration);
-                assemble(ebosSimulator_.model().newtonMethod().numIterations(),
-                         ebosSimulator_.timeStepSize());
+                assemble(simulator_.model().newtonMethod().numIterations(),
+                         simulator_.timeStepSize());
             }
 
             void endIteration()
@@ -215,7 +214,7 @@ namespace Opm {
             void endTimeStep()
             {
                 OPM_TIMEBLOCK(endTimeStep);
-                timeStepSucceeded(ebosSimulator_.time(), ebosSimulator_.timeStepSize());
+                timeStepSucceeded(simulator_.time(), simulator_.timeStepSize());
             }
 
             void endEpisode()
@@ -239,7 +238,7 @@ namespace Opm {
             void initFromRestartFile(const RestartValue& restartValues)
             {
                 initFromRestartFile(restartValues,
-                                    this->ebosSimulator_.vanguard().transferWTestState(),
+                                    this->simulator_.vanguard().transferWTestState(),
                                     grid().size(0),
                                     param_.use_multisegment_well_);
             }
@@ -254,13 +253,13 @@ namespace Opm {
             data::Wells wellData() const
             {
                 auto wsrpt = this->wellState()
-                    .report(ebosSimulator_.vanguard().globalCell().data(),
+                    .report(simulator_.vanguard().globalCell().data(),
                             [this](const int well_index) -> bool
                 {
                     return this->wasDynamicallyShutThisTimeStep(well_index);
                 });
 
-                const auto& tracerRates = ebosSimulator_.problem().tracerModel().getWellTracerRates();
+                const auto& tracerRates = simulator_.problem().tracerModel().getWellTracerRates();
                 this->assignWellTracerRates(wsrpt, tracerRates);
 
 
@@ -292,7 +291,8 @@ namespace Opm {
 
             // Check if well equations are converged locally.
             ConvergenceReport getDomainWellConvergence(const Domain& domain,
-                                                       const std::vector<Scalar>& B_avg) const;
+                                                       const std::vector<Scalar>& B_avg,
+                                                       DeferredLogger& local_deferredLogger) const;
 
             const SimulatorReportSingle& lastReport() const;
 
@@ -360,7 +360,7 @@ namespace Opm {
             void setupDomains(const std::vector<Domain>& domains);
 
         protected:
-            Simulator& ebosSimulator_;
+            Simulator& simulator_;
 
             // a vector of all the wells.
             std::vector<WellInterfacePtr> well_container_{};
@@ -370,11 +370,11 @@ namespace Opm {
             void initializeWellState(const int timeStepIdx);
 
             // create the well container
-            void createWellContainer(const int time_step) override;
+            void createWellContainer(const int report_step) override;
 
             WellInterfacePtr
             createWellPointer(const int wellID,
-                              const int time_step) const;
+                              const int report_step) const;
 
             template <typename WellType>
             std::unique_ptr<WellType>
@@ -405,9 +405,8 @@ namespace Opm {
 
             SimulatorReportSingle last_report_{};
 
-            // solve to get a good network solution, group and well states might be updated during the process.
-            // the reservoir should stay static during this solution procedure.
-            void balanceNetwork(DeferredLogger& deferred_logger);
+            // Pre-step network solve at static reservoir conditions (group and well states might be updated)
+            void doPreStepNetworkRebalance(DeferredLogger& deferred_logger);
 
             // used to better efficiency of calcuation
             mutable BVector scaleAddRes_{};
@@ -418,13 +417,13 @@ namespace Opm {
             std::map<std::string, int> well_domain_;
 
             const Grid& grid() const
-            { return ebosSimulator_.vanguard().grid(); }
+            { return simulator_.vanguard().grid(); }
 
             const EquilGrid& equilGrid() const
-            { return ebosSimulator_.vanguard().equilGrid(); }
+            { return simulator_.vanguard().equilGrid(); }
 
             const EclipseState& eclState() const
-            { return ebosSimulator_.vanguard().eclState(); }
+            { return simulator_.vanguard().eclState(); }
 
             // compute the well fluxes and assemble them in to the reservoir equations as source terms
             // and in the well equations.
@@ -549,11 +548,11 @@ namespace Opm {
             void computeWellTemperature();
 
             int compressedIndexForInterior(int cartesian_cell_idx) const override {
-                return ebosSimulator_.vanguard().compressedIndexForInterior(cartesian_cell_idx);
+                return simulator_.vanguard().compressedIndexForInterior(cartesian_cell_idx);
             }
 
         private:
-            BlackoilWellModel(Simulator& ebosSimulator, const PhaseUsage& pu);
+            BlackoilWellModel(Simulator& simulator, const PhaseUsage& pu);
         };
 
 

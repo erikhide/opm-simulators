@@ -26,6 +26,7 @@
 
 #include <opm/simulators/wells/MultisegmentWellEquations.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
+#include <opm/input/eclipse/Units/Units.hpp>
 
 #include <array>
 #include <cstddef>
@@ -36,10 +37,10 @@ namespace Opm
 
 class DeferredLogger;
 template<class Scalar> class MultisegmentWellGeneric;
-template<class FluidSystem, class Indices, class Scalar> class WellInterfaceIndices;
+template<class FluidSystem, class Indices> class WellInterfaceIndices;
 class WellState;
 
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 class MultisegmentWellPrimaryVariables
 {
 public:
@@ -74,12 +75,13 @@ public:
     //  the number of well equations  TODO: it should have a more general strategy for it
     static constexpr int numWellEq = Indices::numPhases + 1;
 
+    using Scalar = typename FluidSystem::Scalar;
     using EvalWell = DenseAd::Evaluation<double, /*size=*/Indices::numEq + numWellEq>;
 
     using Equations = MultisegmentWellEquations<Scalar,numWellEq,Indices::numEq>;
     using BVectorWell = typename Equations::BVectorWell;
 
-    MultisegmentWellPrimaryVariables(const WellInterfaceIndices<FluidSystem,Indices,Scalar>& well)
+    MultisegmentWellPrimaryVariables(const WellInterfaceIndices<FluidSystem,Indices>& well)
         : well_(well)
     {}
 
@@ -150,6 +152,9 @@ public:
     void setValue(const int idx, const std::array<Scalar, numWellEq>& val)
     { value_[idx] = val; }
 
+    //! output the segments with pressure close to lower pressure limit for debugging purpose
+    void outputLowLimitPressureSegments(DeferredLogger& deferred_logger) const;
+
 private:
     //! \brief Handle non-reasonable fractions due to numerical overshoot.
     void processFractions(const int seg);
@@ -166,7 +171,10 @@ private:
     //! \details Contains derivatives and are used in AD calculation
     std::vector<std::array<EvalWell, numWellEq>> evaluation_;
 
-    const WellInterfaceIndices<FluidSystem,Indices,Scalar>& well_; //!< Reference to well interface
+    const WellInterfaceIndices<FluidSystem,Indices>& well_; //!< Reference to well interface
+
+    static constexpr double bhp_lower_limit = 1. * unit::barsa - 1. * unit::Pascal;
+    static constexpr double seg_pres_lower_limit = 0.;
 };
 
 }

@@ -27,9 +27,8 @@ along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <opm/output/data/Aquifer.hpp>
 
-#include <exception>
 #include <stdexcept>
-#include <utility>
+#include <vector>
 
 namespace Opm
 {
@@ -53,16 +52,16 @@ public:
     using typename Base::ElementMapper;
 
     AquiferFetkovich(const std::vector<Aquancon::AquancCell>& connections,
-                     const Simulator& ebosSimulator,
+                     const Simulator& simulator,
                      const Aquifetp::AQUFETP_data& aqufetp_data)
-        : Base(aqufetp_data.aquiferID, connections, ebosSimulator)
+        : Base(aqufetp_data.aquiferID, connections, simulator)
         , aqufetp_data_(aqufetp_data)
     {
     }
 
-    static AquiferFetkovich serializationTestObject(const Simulator& ebosSimulator)
+    static AquiferFetkovich serializationTestObject(const Simulator& simulator)
     {
-        AquiferFetkovich result({}, ebosSimulator, {});
+        AquiferFetkovich result({}, simulator, {});
 
         result.pressure_previous_ = {1.0, 2.0, 3.0};
         result.pressure_current_ = {4.0, 5.0};
@@ -77,7 +76,7 @@ public:
     void endTimeStep() override
     {
         for (const auto& q : this->Qai_) {
-            this->W_flux_ += q * this->ebos_simulator_.timeStepSize();
+            this->W_flux_ += q * this->simulator_.timeStepSize();
         }
         aquifer_pressure_ = aquiferPressure();
     }
@@ -150,7 +149,7 @@ protected:
     {
         Scalar Flux = this->W_flux_.value();
 
-        const auto& comm = this->ebos_simulator_.vanguard().grid().comm();
+        const auto& comm = this->simulator_.vanguard().grid().comm();
         comm.sum(&Flux, 1);
 
         const auto denom =
@@ -184,7 +183,7 @@ protected:
             this->aqufetp_data_.initial_pressure =
                 this->calculateReservoirEquilibrium();
 
-            const auto& tables = this->ebos_simulator_.vanguard()
+            const auto& tables = this->simulator_.vanguard()
                 .eclState().getTableManager();
 
             this->aqufetp_data_.finishInitialisation(tables);

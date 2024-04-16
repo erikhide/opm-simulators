@@ -23,6 +23,7 @@
 #include <opm/simulators/wells/StandardWellPrimaryVariables.hpp>
 
 #include <opm/common/Exceptions.hpp>
+#include <opm/input/eclipse/Units/Units.hpp>
 
 #include <dune/common/dynvector.hh>
 #include <dune/istl/bvector.hh>
@@ -39,28 +40,48 @@
 #include <opm/simulators/wells/WellInterfaceIndices.hpp>
 #include <opm/simulators/wells/WellState.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cassert>
+#include <limits>
+#include <string>
 
 namespace {
 
-//! \brief Relaxation factor considering only one fraction value.
+/**
+    * @brief Relaxation factor considering only one fraction value.
+    * @param old_value The previous value before the change.
+    * @param dx The solved newton update for the value.
+    * @param well_name The name of the well that calls this function
+    * @param value_name The name/meaning of the old_value.
+    * @param deferred_logger The deferred logger used for logging results and messages.
+    * @return The calculated relaxation factor.
+ */
 template<class Scalar>
 Scalar relaxationFactorFraction(const Scalar old_value,
-                                const Scalar dx)
+                                const Scalar dx,
+                                const std::string& well_name,
+                                const std::string& value_name,
+                                Opm::DeferredLogger& deferred_logger)
 {
-    assert(old_value >= 0. && old_value <= 1.0);
+    constexpr double epislon = std::numeric_limits<Scalar>::epsilon();
+    if (old_value < -epislon ||  old_value > 1.0 + epislon) {
+        const std::string msg = fmt::format(" illegal fraction value {} {} is found for well {}", value_name, old_value, well_name);
+        OPM_DEFLOG_PROBLEM(Opm::NumericalProblem, msg, deferred_logger);
+    }
+    const Scalar& safe_old_value = std::clamp(old_value, 0.0, 1.0);
 
     Scalar relaxation_factor = 1.;
 
     // updated values without relaxation factor
-    const Scalar possible_updated_value = old_value - dx;
+    const Scalar possible_updated_value = safe_old_value - dx;
 
     // 0.95 is an experimental value remains to be optimized
     if (possible_updated_value < 0.0) {
-        relaxation_factor = std::abs(old_value / dx) * 0.95;
+        relaxation_factor = std::abs(safe_old_value / dx) * 0.95;
     } else if (possible_updated_value > 1.0) {
-        relaxation_factor = std::abs((1. - old_value) / dx) * 0.95;
+        relaxation_factor = std::abs((1. - safe_old_value) / dx) * 0.95;
     }
     // if possible_updated_value is between 0. and 1.0, then relaxation_factor
     // remains to be one
@@ -70,35 +91,12 @@ Scalar relaxationFactorFraction(const Scalar old_value,
     return relaxation_factor;
 }
 
-//! \brief Calculate a relaxation factor to avoid overshoot of total rates.
-template<class Scalar>
-Scalar relaxationFactorRate(const Scalar old_value,
-                            const Scalar newton_update)
-{
-    Scalar relaxation_factor = 1.0;
-
-    // For injector, we only check the total rates to avoid sign change of rates
-    const Scalar original_total_rate = old_value;
-    const Scalar possible_update_total_rate = old_value - newton_update;
-
-    // 0.8 here is an experimental value, which remains to be optimized
-    // if the original rate is zero or possible_update_total_rate is zero, relaxation_factor will
-    // always be 1.0, more thoughts might be needed.
-    if (original_total_rate * possible_update_total_rate < 0.) { // sign changed
-        relaxation_factor = std::abs(original_total_rate / newton_update) * 0.8;
-    }
-
-    assert(relaxation_factor >= 0.0 && relaxation_factor <= 1.0);
-
-    return relaxation_factor;
-}
-
 }
 
 namespace Opm {
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 init()
 {
     for (int eqIdx = 0; eqIdx < numWellEq_; ++eqIdx) {
@@ -110,8 +108,8 @@ init()
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 resize(const int numWellEq)
 {
     value_.resize(numWellEq, 0.0);
@@ -119,8 +117,8 @@ resize(const int numWellEq)
     numWellEq_ = numWellEq;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 update(const WellState& well_state,
        const bool stop_or_zero_rate_target,
        DeferredLogger& deferred_logger)
@@ -227,8 +225,8 @@ update(const WellState& well_state,
     value_[Bhp] = ws.bhp;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 updatePolyMW(const WellState& well_state)
 {
     if (well_.isInjector()) {
@@ -243,25 +241,23 @@ updatePolyMW(const WellState& well_state)
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 updateNewton(const BVectorWell& dwells,
              const bool stop_or_zero_rate_target,
-             [[maybe_unused]] const double dFLimit,
-             const double dBHPLimit)
+             const double dFLimit,
+             const double dBHPLimit,
+             DeferredLogger& deferred_logger)
 {
-    const double relaxation_factor_rate = relaxationFactorRate(value_[WQTotal],
-                                                               dwells[0][WQTotal]);
-
     // for injectors, very typical one of the fractions will be one, and it is easy to get zero value
     // fractions. not sure what is the best way to handle it yet, so we just use 1.0 here
     // The relaxationFactorFractionProducer code does not take into account solvent
     // so we use 1.0 for cases with solvent.
     [[maybe_unused]] const double relaxation_factor_fractions =
-        (well_.isProducer() && !Indices::enableSolvent) ? this->relaxationFactorFractionsProducer(dwells) : 1.0;
+            (well_.isProducer() && !Indices::enableSolvent) ? this->relaxationFactorFractionsProducer(dwells, deferred_logger)
+                                                            : 1.0;
 
     // update the second and third well variable (The flux fractions)
-
     if constexpr (has_wfrac_variable) {
         const int sign2 = dwells[0][WFrac] > 0 ? 1: -1;
         const double dx2_limited = sign2 * std::min(std::abs(dwells[0][WFrac] * relaxation_factor_fractions), dFLimit);
@@ -283,22 +279,32 @@ updateNewton(const BVectorWell& dwells,
     this->processFractions();
 
     // updating the total rates Q_t
-    value_[WQTotal] = value_[WQTotal] - dwells[0][WQTotal] * relaxation_factor_rate;
+    value_[WQTotal] -= dwells[0][WQTotal];
+
+    // here, we make sure it is zero for wells with zero rate target(including stopped wells)
     if (stop_or_zero_rate_target) {
         value_[WQTotal] = 0.;
+    } else {
+        // make sure that no injector produce and no producer inject
+        if (well_.isInjector()) {
+            value_[WQTotal] = std::max(value_[WQTotal], 0.0);
+        } else {
+            value_[WQTotal] = std::min(value_[WQTotal], 0.0);
+        }
     }
-    // TODO: here, we make sure it is zero for zero rated wells
 
     // updating the bottom hole pressure
     const int sign1 = dwells[0][Bhp] > 0 ? 1: -1;
     const double dx1_limited = sign1 * std::min(std::abs(dwells[0][Bhp]),
                                                 std::abs(value_[Bhp]) * dBHPLimit);
-    // 1e5 to make sure bhp will not be below 1bar
-    value_[Bhp] = std::max(value_[Bhp] - dx1_limited, 1e5);
+    // some cases might have defaulted bhp constraint of 1 bar, we use a slightly smaller value as the bhp lower limit for Newton update
+    // so that bhp constaint can be an active control when needed.
+    constexpr double bhp_lower_limit = 1. * unit::barsa - 1. * unit::Pascal;
+    value_[Bhp] = std::max(value_[Bhp] - dx1_limited, bhp_lower_limit);
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 updateNewtonPolyMW(const BVectorWell& dwells)
 {
     if (well_.isInjector()) {
@@ -316,8 +322,8 @@ updateNewtonPolyMW(const BVectorWell& dwells)
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 copyToWellState(WellState& well_state,
                 DeferredLogger& deferred_logger) const
 {
@@ -421,8 +427,8 @@ copyToWellState(WellState& well_state,
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 copyToWellStatePolyMW(WellState& well_state) const
 {
     if (well_.isInjector()) {
@@ -437,9 +443,9 @@ copyToWellStatePolyMW(WellState& well_state) const
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-typename StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::EvalWell
-StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+typename StandardWellPrimaryVariables<FluidSystem,Indices>::EvalWell
+StandardWellPrimaryVariables<FluidSystem,Indices>::
 volumeFraction(const unsigned compIdx) const
 {
     if (FluidSystem::numActivePhases() == 1) {
@@ -474,12 +480,12 @@ volumeFraction(const unsigned compIdx) const
     return well_fraction;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-typename StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::EvalWell
-StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+typename StandardWellPrimaryVariables<FluidSystem,Indices>::EvalWell
+StandardWellPrimaryVariables<FluidSystem,Indices>::
 volumeFractionScaled(const int compIdx) const
 {
-    const int legacyCompIdx = well_.ebosCompIdxToFlowCompIdx(compIdx);
+    const int legacyCompIdx = well_.modelCompIdxToFlowCompIdx(compIdx);
     const double scal = well_.scalingFactor(legacyCompIdx);
     if (scal > 0)
         return this->volumeFraction(compIdx) / scal;
@@ -488,9 +494,9 @@ volumeFractionScaled(const int compIdx) const
     return this->volumeFraction(compIdx);
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-typename StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::EvalWell
-StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+typename StandardWellPrimaryVariables<FluidSystem,Indices>::EvalWell
+StandardWellPrimaryVariables<FluidSystem,Indices>::
 surfaceVolumeFraction(const int compIdx) const
 {
     EvalWell sum_volume_fraction_scaled(numWellEq_ + Indices::numEq, 0.);
@@ -503,9 +509,9 @@ surfaceVolumeFraction(const int compIdx) const
     return this->volumeFractionScaled(compIdx) / sum_volume_fraction_scaled;
  }
 
-template<class FluidSystem, class Indices, class Scalar>
-typename StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::EvalWell
-StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+typename StandardWellPrimaryVariables<FluidSystem,Indices>::EvalWell
+StandardWellPrimaryVariables<FluidSystem,Indices>::
 getQs(const int comp_idx) const
 {
     // Note: currently, the WQTotal definition is still depends on Injector/Producer.
@@ -550,8 +556,8 @@ getQs(const int comp_idx) const
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 processFractions()
 {
     static constexpr int Water = BlackoilPhases::Aqua;
@@ -653,9 +659,9 @@ processFractions()
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-double StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
-relaxationFactorFractionsProducer(const BVectorWell& dwells) const
+template<class FluidSystem, class Indices>
+double StandardWellPrimaryVariables<FluidSystem,Indices>::
+relaxationFactorFractionsProducer(const BVectorWell& dwells, DeferredLogger& deferred_logger) const
 {
     // TODO: not considering solvent yet
     // 0.95 is a experimental value, which remains to be optimized
@@ -664,13 +670,19 @@ relaxationFactorFractionsProducer(const BVectorWell& dwells) const
     if (FluidSystem::numActivePhases() > 1) {
         if constexpr (has_wfrac_variable) {
             const double relaxation_factor_w = relaxationFactorFraction(value_[WFrac],
-                                                                        dwells[0][WFrac]);
+                                                                        dwells[0][WFrac],
+                                                                        this->well_.name(),
+                                                                        "WFrac",
+                                                                        deferred_logger);
             relaxation_factor = std::min(relaxation_factor, relaxation_factor_w);
         }
 
         if constexpr (has_gfrac_variable) {
             const double relaxation_factor_g = relaxationFactorFraction(value_[GFrac],
-                                                                        dwells[0][GFrac]);
+                                                                        dwells[0][GFrac],
+                                                                        this->well_.name(),
+                                                                        "GFrac",
+                                                                        deferred_logger);
             relaxation_factor = std::min(relaxation_factor, relaxation_factor_g);
         }
 
@@ -683,7 +695,7 @@ relaxationFactorFractionsProducer(const BVectorWell& dwells) const
             const double possible_updated_sum = original_sum - relaxed_update;
             // We only relax if fraction is above 1.
             // The newton solver should handle the rest
-            const double epsilon = 0.001;
+            constexpr double epsilon = 0.001;
             if (possible_updated_sum > 1.0 + epsilon) {
                 // since the orignal sum <= 1.0 the epsilon asserts that
                 // the relaxed_update is non trivial.
@@ -693,25 +705,28 @@ relaxationFactorFractionsProducer(const BVectorWell& dwells) const
                 relaxation_factor *= further_relaxation_factor;
             }
         }
-        assert(relaxation_factor >= 0.0 && relaxation_factor <= 1.0);
+        if (relaxation_factor < 0.0 || relaxation_factor > 1.0) {
+            const std::string msg = fmt::format(" illegal relaxation factor {} is obtained for well {}", relaxation_factor, this->well_.name());
+            OPM_DEFLOG_PROBLEM(NumericalProblem, msg, deferred_logger);
+        }
     }
     return relaxation_factor;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-void StandardWellPrimaryVariables<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+void StandardWellPrimaryVariables<FluidSystem,Indices>::
 checkFinite(DeferredLogger& deferred_logger) const
 {
     for (const Scalar v : value_) {
         if (!isfinite(v))
-            OPM_DEFLOG_THROW(NumericalProblem,
-                             "Infinite primary variable after update from wellState, well: " + well_.name(),
-                             deferred_logger);
+            OPM_DEFLOG_PROBLEM(NumericalProblem,
+                               "Infinite primary variable after update from wellState, well: " + well_.name(),
+                               deferred_logger);
     }
 }
 
 #define INSTANCE(...) \
-template class StandardWellPrimaryVariables<BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,__VA_ARGS__,double>;
+template class StandardWellPrimaryVariables<BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,__VA_ARGS__>;
 
 // One phase
 INSTANCE(BlackOilOnePhaseIndices<0u,0u,0u,0u,false,false,0u,1u,0u>)

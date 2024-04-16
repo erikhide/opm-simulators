@@ -44,7 +44,7 @@ public:
     friend class ParallelEclipseState; //!< Friend so props can be setup.
     //! \brief Friend to set up props
     template<class Grid>
-    friend class PropsCentroidsDataHandle;
+    friend class PropsDataHandle;
 
     //! \brief Constructor.
     //! \param manager The field property manager to wrap.
@@ -90,6 +90,9 @@ public:
     //! \brief Check if a double property is available.
     //! \param keyword Name of property
     bool has_double(const std::string& keyword) const override;
+
+    //! \brief Returns a list of registered FIP regions.
+    std::vector<std::string> fip_regions() const override;
 
     //! \brief Resets the underlying cartesian mapper
     //! \detail This has to be the cartesian mapper of the distributed grid.
@@ -144,7 +147,7 @@ protected:
 class ParallelEclipseState : public EclipseState {
     //! \brief Friend to set up props
     template<class Grid>
-    friend class PropsCentroidsDataHandle;
+    friend class PropsDataHandle;
 public:
     //! \brief Default constructor.
     ParallelEclipseState(Parallel::Communication comm);
@@ -175,6 +178,12 @@ public:
     //! \brief Returns a const ref to global field properties.
     //! \details Can only be called on root process.
     const FieldPropsManager& globalFieldProps() const override;
+
+    //! \brief Compute basic descriptive statistics about all FIP region sets
+    //!
+    //! MPI-aware version which knows how to compute statistics across all
+    //! ranks.
+    void computeFipRegionStatistics() override;
 
     //! \brief Returns a const ref to the eclipse grid.
     //! \details Can only be called on root process.

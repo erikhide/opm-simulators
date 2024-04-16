@@ -23,7 +23,7 @@
 
 #include <opm/input/eclipse/Schedule/Group/GuideRate.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/FieldPropsManager.hpp>
-
+#include <opm/simulators/utils/ParallelCommunication.hpp>
 
 #include <map>
 #include <string>
@@ -90,7 +90,6 @@ namespace WellGroupHelpers
                                     GroupState& group_state,
                                     std::vector<double>& groupTargetReduction);
 
-    template <class Comm>
     void updateGuideRates(const Group& group,
                           const Schedule& schedule,
                           const SummaryState& summary_state,
@@ -99,12 +98,11 @@ namespace WellGroupHelpers
                           double sim_time,
                           WellState& well_state,
                           const GroupState& group_state,
-                          const Comm& comm,
+                          const Parallel::Communication& comm,
                           GuideRate* guide_rate,
                           std::vector<double>& pot,
                           Opm::DeferredLogger& deferred_logge);
 
-    template <class Comm>
     void updateGuideRateForProductionGroups(const Group& group,
                                             const Schedule& schedule,
                                             const PhaseUsage& pu,
@@ -112,17 +110,16 @@ namespace WellGroupHelpers
                                             const double& simTime,
                                             WellState& wellState,
                                             const GroupState& group_state,
-                                            const Comm& comm,
+                                            const Parallel::Communication& comm,
                                             GuideRate* guideRate,
                                             std::vector<double>& pot);
 
-    template <class Comm>
     void updateGuideRatesForWells(const Schedule& schedule,
                                   const PhaseUsage& pu,
                                   const int reportStepIdx,
                                   const double& simTime,
                                   const WellState& wellState,
-                                  const Comm& comm,
+                                  const Parallel::Communication& comm,
                                   GuideRate* guideRate);
 
     void updateGuideRatesForInjectionGroups(const Group& group,
@@ -179,7 +176,20 @@ namespace WellGroupHelpers
                              const PhaseUsage& pu,
                              const SummaryState& st,
                              const WellState& wellState,
-                             GroupState& group_state);
+                             GroupState& group_state,
+                             bool sum_rank);
+
+    
+    /// Returns the name of the worst offending well and its fraction (i.e. violated_phase / preferred_phase) 
+    std::pair<std::optional<std::string>, double>  worstOffendingWell(const Group& group,
+                                                                      const Schedule& schedule,
+                                                                      const int reportStepIdx,
+                                                                      const Group::ProductionCMode& offendedControl,
+                                                                      const PhaseUsage& pu,
+                                                                      const Parallel::Communication& comm,
+                                                                      const WellState& wellState,
+                                                                      DeferredLogger& deferred_logger);
+
 
     template <class RegionalValues>
     void updateGpMaintTargetForGroups(const Group& group,
@@ -232,39 +242,6 @@ namespace WellGroupHelpers
                              const std::string& always_included_child,
                              const bool is_production_group,
                              const Phase injection_phase);
-
-
-    class FractionCalculator
-    {
-    public:
-        FractionCalculator(const Schedule& schedule,
-                           const WellState& well_state,
-                           const GroupState& group_state,
-                           const int report_step,
-                           const GuideRate* guide_rate,
-                           const GuideRateModel::Target target,
-                           const PhaseUsage& pu,
-                           const bool is_producer,
-                           const Phase injection_phase);
-        double fraction(const std::string& name, const std::string& control_group_name, const bool always_include_this);
-        double localFraction(const std::string& name, const std::string& always_included_child);
-
-    private:
-        std::string parent(const std::string& name);
-        double guideRateSum(const Group& group, const std::string& always_included_child);
-        double guideRate(const std::string& name, const std::string& always_included_child);
-        int groupControlledWells(const std::string& group_name, const std::string& always_included_child);
-        GuideRate::RateVector getGroupRateVector(const std::string& group_name);
-        const Schedule& schedule_;
-        const WellState& well_state_;
-        const GroupState& group_state_;
-        int report_step_;
-        const GuideRate* guide_rate_;
-        GuideRateModel::Target target_;
-        const PhaseUsage& pu_;
-        bool is_producer_;
-        Phase injection_phase_;
-    };
 
 
     std::pair<bool, double> checkGroupConstraintsInj(const std::string& name,

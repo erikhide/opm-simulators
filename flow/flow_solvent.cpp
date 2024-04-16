@@ -15,10 +15,49 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "config.h"
-#include <flow/flow_ebos_solvent.hpp>
 
+#include <flow/flow_solvent.hpp>
 
-int main(int argc, char** argv)
+#include <opm/material/common/ResetLocale.hpp>
+#include <opm/grid/CpGrid.hpp>
+#include <opm/simulators/flow/SimulatorFullyImplicitBlackoil.hpp>
+#include <opm/simulators/flow/Main.hpp>
+
+namespace Opm {
+namespace Properties {
+namespace TTag {
+struct FlowSolventProblem {
+    using InheritsFrom = std::tuple<FlowProblem>;
+};
+}
+template<class TypeTag>
+struct EnableSolvent<TypeTag, TTag::FlowSolventProblem> {
+    static constexpr bool value = true;
+};
+}}
+
+namespace Opm {
+
+// ----------------- Main program -----------------
+int flowSolventMain(int argc, char** argv, bool outputCout, bool outputFiles)
 {
-    return Opm::flowEbosSolventMainStandalone(argc, argv);
+    // we always want to use the default locale, and thus spare us the trouble
+    // with incorrect locale settings.
+    resetLocale();
+
+    FlowMain<Properties::TTag::FlowSolventProblem>
+        mainfunc {argc, argv, outputCout, outputFiles};
+    return mainfunc.execute();
+}
+
+int flowSolventMainStandalone(int argc, char** argv)
+{
+    using TypeTag = Properties::TTag::FlowSolventProblem;
+    auto mainObject = std::make_unique<Opm::Main>(argc, argv);
+    auto ret = mainObject->runStatic<TypeTag>();
+    // Destruct mainObject as the destructor calls MPI_Finalize!
+    mainObject.reset();
+    return ret;
+}
+
 }

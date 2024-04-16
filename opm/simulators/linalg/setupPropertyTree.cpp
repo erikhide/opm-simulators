@@ -63,7 +63,7 @@ setupPropertyTree(FlowLinearSolverParameters p, // Note: copying the parameters 
     }
 
     // Use CPR configuration.
-    if ((conf == "cpr_trueimpes") || (conf == "cpr_quasiimpes")) {
+    if ((conf == "cpr_trueimpes") || (conf == "cpr_quasiimpes") || (conf == "cpr_trueimpesanalytic")) {
         if (!linearSolverMaxIterSet) {
             // Use our own default unless it was explicitly overridden by user.
             p.linear_solver_maxiter_ = 20;
@@ -96,6 +96,10 @@ setupPropertyTree(FlowLinearSolverParameters p, // Note: copying the parameters 
         return setupILU(conf, p);
     }
 
+    if (conf == "dilu") {
+        return setupDILU(conf, p);
+    }
+
     if (conf == "umfpack") {
         return setupUMFPack(conf, p);
     }
@@ -111,7 +115,7 @@ setupPropertyTree(FlowLinearSolverParameters p, // Note: copying the parameters 
     // No valid configuration option found.
     OPM_THROW(std::invalid_argument,
               conf + " is not a valid setting for --linear-solver-configuration."
-              " Please use ilu0, cpr, cpr_trueimpes, cpr_quasiimpes or isai");
+              " Please use ilu0, dilu, cpr, cprw, cpr_trueimpes, cpr_quasiimpes, cpr_trueimpesanalytic or isai");
 }
 
 std::string getSolverString(const FlowLinearSolverParameters& p)
@@ -182,8 +186,10 @@ setupCPR(const std::string& conf, const FlowLinearSolverParameters& p)
     prm.put("preconditioner.type", "cpr"s);
     if (conf == "cpr_quasiimpes") {
         prm.put("preconditioner.weight_type", "quasiimpes"s);
-    } else {
+    } else if (conf == "cpr_trueimpes") {
         prm.put("preconditioner.weight_type", "trueimpes"s);
+    } else {
+        prm.put("preconditioner.weight_type", "trueimpesanalytic"s);
     }
     prm.put("preconditioner.finesmoother.type", "ParOverILU0"s);
     prm.put("preconditioner.finesmoother.relaxation", 1.0);
@@ -263,6 +269,19 @@ setupILU([[maybe_unused]] const std::string& conf, const FlowLinearSolverParamet
     prm.put("preconditioner.type", "ParOverILU0"s);
     prm.put("preconditioner.relaxation", p.ilu_relaxation_);
     prm.put("preconditioner.ilulevel", p.ilu_fillin_level_);
+    return prm;
+}
+
+PropertyTree
+setupDILU([[maybe_unused]] const std::string& conf, const FlowLinearSolverParameters& p)
+{
+    using namespace std::string_literals;
+    PropertyTree prm;
+    prm.put("tol", p.linear_solver_reduction_);
+    prm.put("maxiter", p.linear_solver_maxiter_);
+    prm.put("verbosity", p.linear_solver_verbosity_);
+    prm.put("solver", getSolverString(p));
+    prm.put("preconditioner.type", "DILU"s);
     return prm;
 }
 

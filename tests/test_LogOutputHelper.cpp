@@ -40,6 +40,28 @@
 #include <memory>
 #include <string>
 
+template<int type>
+struct LogFixture
+{
+    LogFixture() {
+        Opm::OpmLog::addBackend("stream",
+                                std::make_shared<Opm::StreamLog>(str, type));
+    }
+    ~LogFixture() {
+        Opm::OpmLog::removeBackend("stream");
+    }
+
+    std::stringstream str;
+};
+/*
+template<>
+std::stringstream LogFixture<Opm::Log::MessageType::Warning>::str;
+template<>
+std::stringstream LogFixture<Opm::Log::MessageType::Note>::str;
+*/
+using LogNoteFixture = LogFixture<Opm::Log::MessageType::Note>;
+using LogWarningFixture = LogFixture<Opm::Log::MessageType::Warning>;
+
 namespace {
 
 const std::string input = R"(
@@ -72,6 +94,8 @@ WCONINJE
   'INJ' 'GAS' 'OPEN'  'RATE'  100000 1* 9014 /
 /)";
 
+
+
 std::string trimStream(std::stringstream& str)
 {
     char buffer[1024];
@@ -89,9 +113,10 @@ std::string trimStream(std::stringstream& str)
     return data;
 }
 
+
 }
 
-BOOST_AUTO_TEST_CASE(Cumulative)
+BOOST_FIXTURE_TEST_CASE(Cumulative, LogNoteFixture)
 {
     const std::string reference = R"(=================================================== CUMULATIVE PRODUCTION/INJECTION REPORT =========================================
 :  WELL  :  LOCATION :  WELL  :CTRL:    OIL    :   WATER   :    GAS    :   Prod    :    OIL    :   WATER   :    GAS    :   INJ     :
@@ -99,15 +124,11 @@ BOOST_AUTO_TEST_CASE(Cumulative)
 :        :           :        :    :    MSTB   :   MSTB    :    MMSCF  :   MRB     :    MSTB   :   MSTB    :    MMSCF  :   MRB     :
 ====================================================================================================================================
 :   FIELD:           :        :    :        1.0:        2.0:        3.0:        4.0:        5.0:        6.0:        7.0:        8.0:
-:--------:-----------:--------:----:------------:----------:-----------:-----------:------------:----------:-----------:-----------:
 :      G1:           :        :    :        9.0:       10.0:       11.0:       12.0:       13.0:       14.0:       15.0:       15.0:
-:--------:-----------:--------:----:------------:----------:-----------:-----------:------------:----------:-----------:-----------:
 :    PROD:   10,   10:    PROD:ORAT:       16.0:       17.0:       18.0:       19.0:       20.0:       21.0:       22.0:       23.0:
-:--------:-----------:--------:----:------------:----------:-----------:-----------:------------:----------:-----------:-----------:
 :     INJ:    1,    1:     INJ:GRAT:       24.0:       25.0:       26.0:       27.0:       28.0:       29.0:       30.0:       31.0:
-:--------:-----------:--------:----:------------:----------:-----------:-----------:------------:----------:-----------:-----------:
+:--------:-----------:--------:----:-----------:-----------:-----------:-----------:-----------:-----------:-----------:-----------:
 )";
-
     Opm::Parser parser;
     auto python = std::make_shared<Opm::Python>();
     auto deck = parser.parseString(input);
@@ -119,55 +140,56 @@ BOOST_AUTO_TEST_CASE(Cumulative)
 
     Opm::EclipseState eclState(deck);
     Opm::SummaryState st;
+
+    // Note: Cumulative gas values--e.g., FGPT--multiplied by an additional
+    // factor of 1000, for a total multiplicative factor of one million, in
+    // order to produce the expected balance sheet output in MM* units.
     constexpr auto fields = std::array {
         std::pair{"FOPT", 1.0},
         std::pair{"FWPT", 2.0},
-        std::pair{"FGPT", 3.0},
+        std::pair{"FGPT", 3.0e3},
         std::pair{"FVPT", 4.0},
         std::pair{"FOIT", 5.0},
         std::pair{"FWIT", 6.0},
-        std::pair{"FGIT", 7.0},
+        std::pair{"FGIT", 7.0e3},
         std::pair{"FVIT", 8.0},
         std::pair{"GOPT:G1", 9.0},
         std::pair{"GWPT:G1", 10.0},
-        std::pair{"GGPT:G1", 11.0},
+        std::pair{"GGPT:G1", 11.0e3},
         std::pair{"GVPT:G1", 12.0},
         std::pair{"GOIT:G1", 13.0},
         std::pair{"GWIT:G1", 14.0},
-        std::pair{"GGIT:G1", 15.0},
+        std::pair{"GGIT:G1", 15.0e3},
         std::pair{"GVIT:G1", 15.0},
         std::pair{"WOPT:PROD", 16.0},
         std::pair{"WWPT:PROD", 17.0},
-        std::pair{"WGPT:PROD", 18.0},
+        std::pair{"WGPT:PROD", 18.0e3},
         std::pair{"WVPT:PROD", 19.0},
         std::pair{"WOIT:PROD", 20.0},
         std::pair{"WWIT:PROD", 21.0},
-        std::pair{"WGIT:PROD", 22.0},
+        std::pair{"WGIT:PROD", 22.0e3},
         std::pair{"WVIT:PROD", 23.0},
         std::pair{"WOPT:INJ", 24.0},
         std::pair{"WWPT:INJ", 25.0},
-        std::pair{"WGPT:INJ", 26.0},
+        std::pair{"WGPT:INJ", 26.0e3},
         std::pair{"WVPT:INJ", 27.0},
         std::pair{"WOIT:INJ", 28.0},
         std::pair{"WWIT:INJ", 29.0},
-        std::pair{"WGIT:INJ", 30.0},
+        std::pair{"WGIT:INJ", 30.0e3},
         std::pair{"WVIT:INJ", 31.0},
     };
     for (const auto& p : fields) {
         st.set(p.first, p.second * 1e3);
     }
 
-    std::stringstream str;
-    Opm::OpmLog::addBackend("stream",
-                            std::make_shared<Opm::StreamLog>(str, Opm::Log::MessageType::Note));
-
-    Opm::LogOutputHelper<double> helper(eclState, schedule, st);
-    helper.cumulative(0, [](const std::string&) { return false; });
+    Opm::LogOutputHelper<double> helper(eclState, schedule, st, "dummy version");
+    helper.cumulative(0);
     std::string data = trimStream(str);
     BOOST_CHECK_EQUAL(data, reference);
 }
 
-BOOST_AUTO_TEST_CASE(Error)
+
+BOOST_FIXTURE_TEST_CASE(Error, LogWarningFixture)
 {
     const std::string reference = R"(Finding the bubble point pressure failed for 3 cells [(2,1,1), (1,3,1), (1,4,1)]
 Finding the dew point pressure failed for 3 cells [(5,1,1), (6,1,1), (7,1,1)]
@@ -183,46 +205,48 @@ Finding the dew point pressure failed for 3 cells [(5,1,1), (6,1,1), (7,1,1)]
     Opm::Schedule schedule(deck,  grid, fp, runspec, python);
     Opm::EclipseState eclState(deck);
 
-    std::stringstream str;
-    Opm::OpmLog::addBackend("stream",
-                            std::make_shared<Opm::StreamLog>(str, Opm::Log::MessageType::Warning));
-
     Opm::SummaryState st;
-    Opm::LogOutputHelper<double> helper(eclState, schedule, st);
+    Opm::LogOutputHelper<double> helper(eclState, schedule, st, "dummy version");
 
+    str.str(""); // clear out parser errors
     helper.error({1,20,30}, {4,5,6});
     std::string data = trimStream(str);
     BOOST_CHECK_EQUAL(data, reference);
 }
 
-BOOST_AUTO_TEST_CASE(Fip)
+BOOST_FIXTURE_TEST_CASE(Fip, LogNoteFixture)
 {
-    const std::string reference = R"(Field total pressure dependent pore volume = 50 RB
-===================================================
-:                   Field Totals                  :
-:      PAV  =             0  PSIA                 :
-:      PORV =           157   RB                  :
-: Pressure is weighted by hydrocarbon pore volume :
-: Pore volumes are taken at reference conditions  :
-:--------------- Oil    STB ---------------:-- Wat    STB --:--------------- Gas   MSCF ---------------:
-:      Liquid        Vapour        Total   :      Total     :      Free        Dissolved       Total   :
-:------------------------:------------------------------------------:----------------:------------------------------------------:
-:Currently   in place    :           132           138           120:          113   :             1             1             1:
-:------------------------:------------------------------------------:----------------:------------------------------------------:
-:Originally  in place    :            25            31            13:            6   :             0             0             0:
-:========================:==========================================:================:==========================================:
-FIPNUM report region 1 pressure dependent pore volume = 50 RB
-===================================================
-:        FIPNUM report region   1                 :
-:      PAV  =             0  PSIA                 :
-:      PORV =           371   RB                  :
-:--------------- Oil    STB ---------------:-- Wat    STB --:--------------- Gas   MSCF ---------------:
-:      Liquid        Vapour        Total   :      Total     :      Free        Dissolved       Total   :
-:------------------------:------------------------------------------:----------------:------------------------------------------:
-:Currently   in place    :           346           352           333:          327   :             2             2             2:
-:------------------------:------------------------------------------:----------------:------------------------------------------:
-:Originally  in place    :           239           245           226:          220   :             1             1             1:
-:========================:==========================================:================:==========================================:
+    const std::string reference = R"(
+                                                     ==================================================
+                                                     :               FIELD TOTALS                     :
+                                                     :         PAV =             0  PSIA              :
+                                                     :         PORV=           157   RB               :
+                                                     : Pressure is weighted by hydrocarbon pore volume:
+                                                     : Pore volumes are taken at reference conditions :
+                           :--------------- OIL    STB ----------------:-- WAT    STB --:--------------- GAS   MSCF ----------------:
+                           :      LIQUID        VAPOUR         TOTAL   :      TOTAL     :       FREE      DISSOLVED         TOTAL   :
+ :-------------------------:-------------------------------------------:----------------:-------------------------------------------:
+ :CURRENTLY IN PLACE       :           132           138            120:           113  :             1             1              1:
+ :-------------------------:-------------------------------------------:----------------:-------------------------------------------:
+ :ORIGINALLY IN PLACE      :            25            31             13:             6  :             0             0              0:
+ ====================================================================================================================================
+
+
+
+                                                     ==================================================
+                                                     :        FIPNUM REPORT REGION   1                :
+                                                     :         PAV =             0  PSIA              :
+                                                     :         PORV=           371   RB               :
+                           :--------------- OIL    STB ----------------:-- WAT    STB --:--------------- GAS   MSCF ----------------:
+                           :      LIQUID        VAPOUR         TOTAL   :      TOTAL     :       FREE      DISSOLVED         TOTAL   :
+ :-------------------------:-------------------------------------------:----------------:-------------------------------------------:
+ :CURRENTLY IN PLACE       :           346           352            333:           327  :             2             2              2:
+ :-------------------------:-------------------------------------------:----------------:-------------------------------------------:
+ :ORIGINALLY IN PLACE      :           239           245            226:           220  :             1             1              1:
+ :-------------------------:-------------------------------------------:----------------:-------------------------------------------:
+ ====================================================================================================================================
+
+
 )";
 
     Opm::Parser parser;
@@ -237,21 +261,18 @@ FIPNUM report region 1 pressure dependent pore volume = 50 RB
     Opm::EclipseState eclState(deck);
     Opm::SummaryState st;
 
-    std::stringstream str;
-    Opm::OpmLog::addBackend("stream",
-                            std::make_shared<Opm::StreamLog>(str, Opm::Log::MessageType::Note));
-
-    Opm::LogOutputHelper<double> helper(eclState, schedule, st);
+    Opm::LogOutputHelper<double> helper(eclState, schedule, st, "dummy version");
     Opm::Inplace initial, current;
     const auto& phases = current.phases();
+    int offset = 17;
     double j = 1.0;
     for (const auto& phase : phases) {
         initial.add(phase, j);
-        initial.add("FIPNUM", phase, 0, j + 2*phases.size());
-        initial.add("FIPNUM", phase, 1, j + 2*phases.size());
-        current.add(phase, j + phases.size());
-        current.add("FIPNUM", phase, 0, j + 3*phases.size());
-        current.add("FIPNUM", phase, 1, j + 3*phases.size());
+        initial.add("FIPNUM", phase, 0, j + 2*offset);
+        initial.add("FIPNUM", phase, 1, j + 2*offset);
+        current.add(phase, j + offset);
+        current.add("FIPNUM", phase, 0, j + 3*offset);
+        current.add("FIPNUM", phase, 1, j + 3*offset);
         ++j;
     }
 
@@ -269,24 +290,27 @@ FIPNUM report region 1 pressure dependent pore volume = 50 RB
     current.add("FIPNUM", Opm::Inplace::Phase::PressurePV, 1, 6.0);
     current.add("FIPNUM", Opm::Inplace::Phase::DynamicPoreVolume, 1, 8.0);
 
-    helper.fip(current, initial);
-    std::string data = trimStream(str);
-    BOOST_CHECK_EQUAL(data, reference);
+    helper.fip(current, initial, "");
+    helper.fip(current, initial, "FIPNUM");
+
+    BOOST_CHECK_EQUAL(str.str(), reference);
 }
 
-BOOST_AUTO_TEST_CASE(FipResv)
+BOOST_FIXTURE_TEST_CASE(FipResv, LogNoteFixture)
 {
-    const std::string reference = R"(===================================
-:  RESERVOIR VOLUMES      RB      :
-:---------:---------------:---------------:---------------:---------------:---------------:
-: REGION  :  TOTAL PORE   :  PORE VOLUME  :  PORE VOLUME  : PORE VOLUME   :  PORE VOLUME  :
-:         :   VOLUME      :  CONTAINING   :  CONTAINING   : CONTAINING    :  CONTAINING   :
-:         :               :     OIL       :    WATER      :    GAS        :  HYDRO-CARBON :
-:---------:---------------:---------------:---------------:---------------:---------------
-:        1:            176:            170:            164:            176:            346:
-:---------:---------------:---------------:---------------:---------------:---------------:
+    const std::string reference = R"(
+                                                     ===================================
+                                                     :  RESERVOIR VOLUMES      RB      :
+ :---------:---------------:---------------:---------------:---------------:---------------:
+ : REGION  :  TOTAL PORE   :  PORE VOLUME  :  PORE VOLUME  : PORE VOLUME   :  PORE VOLUME  :
+ :         :   VOLUME      :  CONTAINING   :  CONTAINING   : CONTAINING    :  CONTAINING   :
+ :         :               :     OIL       :    WATER      :    GAS        :  HYDRO-CARBON :
+ :---------:---------------:---------------:---------------:---------------:---------------
+ :   FIELD :            176:             13:             19:             25:             38:
+ :       1 :            176:            170:            164:            176:            346:
+ ===========================================================================================
 )";
-
+    
     Opm::Parser parser;
     auto python = std::make_shared<Opm::Python>();
     auto deck = parser.parseString(input);
@@ -299,17 +323,14 @@ BOOST_AUTO_TEST_CASE(FipResv)
     Opm::EclipseState eclState(deck);
     Opm::SummaryState st;
 
-    std::stringstream str;
-    Opm::OpmLog::addBackend("stream",
-                            std::make_shared<Opm::StreamLog>(str, Opm::Log::MessageType::Note));
-
-    Opm::LogOutputHelper<double> helper(eclState, schedule, st);
+    Opm::LogOutputHelper<double> helper(eclState, schedule, st, "dummy version");
     Opm::Inplace current;
     const auto& phases = current.phases();
+    int offset = 17;
     double j = 1.0;
     for (const auto& phase : phases) {
-        current.add(phase, phases.size());
-        current.add("FIPNUM", phase, 1, j + phases.size());
+        current.add(phase, offset);
+        current.add("FIPNUM", phase, 1, j + offset);
         ++j;
     }
 
@@ -317,26 +338,24 @@ BOOST_AUTO_TEST_CASE(FipResv)
     current.add(Opm::Inplace::Phase::OilResVolume, 2.0);
     current.add(Opm::Inplace::Phase::WaterResVolume, 3.0);
     current.add(Opm::Inplace::Phase::GasResVolume, 4.0);
-    current.add("FIPNUM", Opm::Inplace::Phase::DynamicPoreVolume, 1, 11.0 + phases.size());
+    current.add("FIPNUM", Opm::Inplace::Phase::DynamicPoreVolume, 1, 11.0 + offset);
 
-    helper.fipResv(current);
-    std::string data = trimStream(str);
-    BOOST_CHECK_EQUAL(data, reference);
+    helper.fipResv(current, "FIPNUM");
+    BOOST_CHECK_EQUAL(str.str(), reference);
 }
 
-BOOST_AUTO_TEST_CASE(Injection)
+
+BOOST_FIXTURE_TEST_CASE(Injection, LogNoteFixture)
 {
     const std::string reference = R"(=================================================== INJECTION REPORT ========================================
 :  WELL  :  LOCATION : CTRL : CTRL : CTRL :    OIL    :   WATER   :    GAS    :   FLUID   : BHP OR : THP OR :
 :  NAME  :  (I,J,K)  : MODE : MODE : MODE :    RATE   :   RATE    :    RATE   :  RES.VOL. : CON.PR.: BLK.PR.:
 :        :           : OIL  : WAT  : GAS  :  STB/DAY  :  STB/DAY  :  MSCF/DAY :  RB/DAY   :  PSIA  :  PSIA  :
-==============================================================================================================
+=============================================================================================================
 :   FIELD:           :      :      :      :        1.0:        2.0:        3.0:        4.0:        :        :
-:--------:-----------:------:------:------:------------:----------:-----------:-----------:--------:--------:
 :      G1:           :      :      :      :        5.0:        6.0:        7.0:        8.0:        :        :
-:--------:-----------:------:------:------:------------:----------:-----------:-----------:--------:--------:
 :     INJ:    1,    1:      :      :  GRAT:        9.0:       10.0:       11.0:       12.0:    13.0:    14.0:
-:--------:-----------:------:------:------:------------:----------:-----------:-----------:--------:--------:
+:--------:-----------:------:------:------:-----------:-----------:-----------:-----------:--------:--------:
 )";
 
     Opm::Parser parser;
@@ -370,17 +389,14 @@ BOOST_AUTO_TEST_CASE(Injection)
         st.set(p.first, p.second);
     }
 
-    std::stringstream str;
-    Opm::OpmLog::addBackend("stream",
-                            std::make_shared<Opm::StreamLog>(str, Opm::Log::MessageType::Note));
-
-    Opm::LogOutputHelper<double> helper(eclState, schedule, st);
-    helper.injection(0, [](const std::string&) { return false; });
+    Opm::LogOutputHelper<double> helper(eclState, schedule, st, "dummy version");
+    helper.injection(0);
     std::string data = trimStream(str);
     BOOST_CHECK_EQUAL(data, reference);
 }
 
-BOOST_AUTO_TEST_CASE(Production)
+
+BOOST_FIXTURE_TEST_CASE(Production, LogNoteFixture)
 {
     const std::string reference = R"(======================================================= PRODUCTION REPORT =======================================================
 :  WELL  :  LOCATION :CTRL:    OIL    :   WATER   :    GAS    :   FLUID   :   WATER   : GAS/OIL  :  WAT/GAS   : BHP OR : THP OR :
@@ -388,12 +404,11 @@ BOOST_AUTO_TEST_CASE(Production)
 :        :           :    :  STB/DAY  :  STB/DAY  :  MSCF/DAY :  RB/DAY   :           : MSCF/STB :  STB/MSCF  :  PSIA  :  PSIA  :
 =================================================================================================================================
 :   FIELD:           :    :        1.0:        2.0:        3.0:        4.0:      5.000:      6.00:      0.6667:        :        :
-:--------:-----------:----:-----------:-----------:-----------:-----------:-----------:----------:------------:--------:--------:
 :      G1:           :    :        7.0:        8.0:        9.0:       10.0:     11.000:     12.00:      0.8889:        :        :
-:--------:-----------:----:-----------:-----------:-----------:-----------:-----------:----------:------------:--------:--------:
 :    PROD:   10,   10:ORAT:       13.0:       14.0:       15.0:       16.0:     17.000:     18.00:      0.9333:    19.0:    20.0:
 :--------:-----------:----:-----------:-----------:-----------:-----------:-----------:----------:------------:--------:--------:
 )";
+
 
     Opm::Parser parser;
     auto python = std::make_shared<Opm::Python>();
@@ -432,12 +447,9 @@ BOOST_AUTO_TEST_CASE(Production)
         st.set(p.first, p.second);
     }
 
-    std::stringstream str;
-    Opm::OpmLog::addBackend("stream",
-                            std::make_shared<Opm::StreamLog>(str, Opm::Log::MessageType::Note));
-
-    Opm::LogOutputHelper<double> helper(eclState, schedule, st);
-    helper.production(0, [](const std::string&) { return false; });
+    Opm::LogOutputHelper<double> helper(eclState, schedule, st, "dummy version");
+    helper.production(0);
     std::string data = trimStream(str);
     BOOST_CHECK_EQUAL(data, reference);
 }
+

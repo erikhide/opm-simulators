@@ -23,36 +23,36 @@
 #ifndef OPM_MAIN_HEADER_INCLUDED
 #define OPM_MAIN_HEADER_INCLUDED
 
-#include <flow/flow_ebos_blackoil.hpp>
-#include <flow/flow_ebos_blackoil_legacyassembly.hpp>
+#include <flow/flow_blackoil.hpp>
+#include <flow/flow_blackoil_legacyassembly.hpp>
 
-#include <flow/flow_ebos_gasoil.hpp>
-#include <flow/flow_ebos_gasoildiffuse.hpp>
-#include <flow/flow_ebos_gasoil_energy.hpp>
-#include <flow/flow_ebos_oilwater.hpp>
-#include <flow/flow_ebos_gaswater.hpp>
-#include <flow/flow_ebos_gaswater_solvent.hpp>
-#include <flow/flow_ebos_solvent.hpp>
-#include <flow/flow_ebos_solvent_foam.hpp>
-#include <flow/flow_ebos_polymer.hpp>
-#include <flow/flow_ebos_extbo.hpp>
-#include <flow/flow_ebos_foam.hpp>
-#include <flow/flow_ebos_brine.hpp>
-#include <flow/flow_ebos_brine_saltprecipitation.hpp>
-#include <flow/flow_ebos_gaswater_saltprec_vapwat.hpp>
-#include <flow/flow_ebos_gaswater_saltprec_energy.hpp>
-#include <flow/flow_ebos_brine_precsalt_vapwat.hpp>
-#include <flow/flow_ebos_onephase.hpp>
-#include <flow/flow_ebos_onephase_energy.hpp>
-#include <flow/flow_ebos_oilwater_brine.hpp>
-#include <flow/flow_ebos_gaswater_brine.hpp>
-#include <flow/flow_ebos_gaswater_energy.hpp>
-#include <flow/flow_ebos_gaswater_dissolution.hpp>
-#include <flow/flow_ebos_gaswater_dissolution_diffuse.hpp>
-#include <flow/flow_ebos_energy.hpp>
-#include <flow/flow_ebos_oilwater_polymer.hpp>
-#include <flow/flow_ebos_oilwater_polymer_injectivity.hpp>
-#include <flow/flow_ebos_micp.hpp>
+#include <flow/flow_gasoil.hpp>
+#include <flow/flow_gasoildiffuse.hpp>
+#include <flow/flow_gasoil_energy.hpp>
+#include <flow/flow_oilwater.hpp>
+#include <flow/flow_gaswater.hpp>
+#include <flow/flow_gaswater_solvent.hpp>
+#include <flow/flow_solvent.hpp>
+#include <flow/flow_solvent_foam.hpp>
+#include <flow/flow_polymer.hpp>
+#include <flow/flow_extbo.hpp>
+#include <flow/flow_foam.hpp>
+#include <flow/flow_brine.hpp>
+#include <flow/flow_brine_saltprecipitation.hpp>
+#include <flow/flow_gaswater_saltprec_vapwat.hpp>
+#include <flow/flow_gaswater_saltprec_energy.hpp>
+#include <flow/flow_brine_precsalt_vapwat.hpp>
+#include <flow/flow_onephase.hpp>
+#include <flow/flow_onephase_energy.hpp>
+#include <flow/flow_oilwater_brine.hpp>
+#include <flow/flow_gaswater_brine.hpp>
+#include <flow/flow_gaswater_energy.hpp>
+#include <flow/flow_gaswater_dissolution.hpp>
+#include <flow/flow_gaswater_dissolution_diffuse.hpp>
+#include <flow/flow_energy.hpp>
+#include <flow/flow_oilwater_polymer.hpp>
+#include <flow/flow_oilwater_polymer_injectivity.hpp>
+#include <flow/flow_micp.hpp>
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 
@@ -60,7 +60,7 @@
 #include <opm/models/utils/parametersystem.hh>
 
 #include <opm/simulators/flow/Banners.hpp>
-#include <opm/simulators/flow/FlowMainEbos.hpp>
+#include <opm/simulators/flow/FlowMain.hpp>
 
 #if HAVE_DUNE_FEM
 #include <dune/fem/misc/mpimanager.hh>
@@ -72,8 +72,13 @@
 #include <opm/simulators/utils/ParallelEclipseState.hpp>
 #endif
 
+#if HAVE_DAMARIS
+#include <opm/simulators/utils/DamarisKeywords.hpp>
+#endif
+
 #include <cassert>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -88,7 +93,7 @@ namespace Opm::Properties {
 // simulator.
 namespace TTag {
 struct FlowEarlyBird {
-    using InheritsFrom = std::tuple<EclFlowProblem>;
+    using InheritsFrom = std::tuple<FlowProblem>;
 };
 }
 
@@ -102,13 +107,13 @@ class WellTestState;
 
 // ----------------- Main program -----------------
 template <class TypeTag>
-int flowEbosMain(int argc, char** argv, bool outputCout, bool outputFiles)
+int flowMain(int argc, char** argv, bool outputCout, bool outputFiles)
 {
     // we always want to use the default locale, and thus spare us the trouble
     // with incorrect locale settings.
     resetLocale();
 
-    FlowMainEbos<TypeTag> mainfunc(argc, argv, outputCout, outputFiles);
+    FlowMain<TypeTag> mainfunc(argc, argv, outputCout, outputFiles);
     return mainfunc.execute();
 }
 
@@ -122,7 +127,7 @@ int flowEbosMain(int argc, char** argv, bool outputCout, bool outputFiles)
 class Main
 {
 public:
-    Main(int argc, char** argv);
+    Main(int argc, char** argv, bool ownMPI = true);
 
     // This constructor can be called from Python
     Main(const std::string& filename);
@@ -165,24 +170,32 @@ public:
         return exitCode;
     }
 
-    using FlowMainEbosType = FlowMainEbos<Properties::TTag::EclFlowProblemTPFA>;
+    using FlowMainType = FlowMain<Properties::TTag::FlowProblemTPFA>;
     // To be called from the Python interface code. Only do the
-    // initialization and then return a pointer to the FlowEbosMain
+    // initialization and then return a pointer to the FlowMain
     // object that can later be accessed directly from the Python interface
     // to e.g. advance the simulator one report step
-    std::unique_ptr<FlowMainEbosType> initFlowEbosBlackoil(int& exitCode)
+    std::unique_ptr<FlowMainType> initFlowBlackoil(int& exitCode)
     {
         exitCode = EXIT_SUCCESS;
         if (initialize_<Properties::TTag::FlowEarlyBird>(exitCode)) {
             // TODO: check that this deck really represents a blackoil
             // case. E.g. check that number of phases == 3
             this->setupVanguard();
-            return flowEbosBlackoilTpfaMainInit(
+            return flowBlackoilTpfaMainInit(
                 argc_, argv_, outputCout_, outputFiles_);
         } else {
             //NOTE: exitCode was set by initialize_() above;
-            return std::unique_ptr<FlowMainEbosType>(); // nullptr
+            return std::unique_ptr<FlowMainType>(); // nullptr
         }
+    }
+
+    //! \brief Used for test_outputdir.
+    int justInitialize()
+    {
+        int exitCode = EXIT_SUCCESS;
+        initialize_<Properties::TTag::FlowEarlyBird>(exitCode);
+        return exitCode;
     }
 
 private:
@@ -269,7 +282,7 @@ private:
     int dispatchStatic_()
     {
         this->setupVanguard();
-        return flowEbosMain<TypeTag>(argc_, argv_, outputCout_, outputFiles_);
+        return flowMain<TypeTag>(argc_, argv_, outputCout_, outputFiles_);
     }
 
     /// \brief Initialize
@@ -300,7 +313,7 @@ private:
         using PreProblem = GetPropType<PreTypeTag, Properties::Problem>;
 
         PreProblem::setBriefDescription("Flow, an advanced reservoir simulator for ECL-decks provided by the Open Porous Media project.");
-        int status = FlowMainEbos<PreTypeTag>::setupParameters_(argc_, argv_, EclGenericVanguard::comm());
+        int status = FlowMain<PreTypeTag>::setupParameters_(argc_, argv_, FlowGenericVanguard::comm());
         if (status != 0) {
             // if setupParameters_ returns a value smaller than 0, there was no error, but
             // the program should abort. This is the case e.g. for the --help and the
@@ -320,23 +333,34 @@ private:
             outputDir = eclipseState_->getIOConfig().getOutputDir();
         }
         else {
-            deckFilename = EWOMS_GET_PARAM(PreTypeTag, std::string, EclDeckFileName);
-            outputDir = EWOMS_GET_PARAM(PreTypeTag, std::string, OutputDir);
+            deckFilename = Parameters::get<PreTypeTag, Properties::EclDeckFileName>();
+            outputDir = Parameters::get<PreTypeTag, Properties::OutputDir>();
         }
 
 #if HAVE_DAMARIS
-        enableDamarisOutput_ = EWOMS_GET_PARAM(PreTypeTag, bool, EnableDamarisOutput);
+        enableDamarisOutput_ = Parameters::get<PreTypeTag, Properties::EnableDamarisOutput>();
+        
         // Reset to false as we cannot use Damaris if there is only one rank.
-        if ((enableDamarisOutput_ == true) && (EclGenericVanguard::comm().size() == 1)) {
+        if ((enableDamarisOutput_ == true) && (FlowGenericVanguard::comm().size() == 1)) {
             std::string msg ;
             msg = "\nUse of Damaris (command line argument --enable-damaris-output=true) has been disabled for run with only one rank.\n" ;
             OpmLog::warning(msg);
             enableDamarisOutput_ = false ;
         }
-        
+
         if (enableDamarisOutput_) {
-            this->setupDamaris(outputDir,
-                               EWOMS_GET_PARAM(PreTypeTag, bool, EnableDamarisOutputCollective));
+            // Deal with empty (defaulted) output dir, should be deck dir
+            auto damarisOutputDir = outputDir;
+            if (outputDir.empty()) {
+                auto odir = std::filesystem::path{deckFilename}.parent_path();
+                if (odir.empty()) {
+                    damarisOutputDir = ".";
+                } else {
+                    damarisOutputDir = odir.generic_string();
+                }
+            }
+            // Damaris server ranks will block here until damaris_stop() is called by client ranks
+            this->setupDamaris(damarisOutputDir);
         }
 #endif // HAVE_DAMARIS
 
@@ -347,10 +371,10 @@ private:
             return true;
         }
         
-        int mpiRank = EclGenericVanguard::comm().rank();
+        int mpiRank = FlowGenericVanguard::comm().rank();
         outputCout_ = false;
         if (mpiRank == 0)
-            outputCout_ = EWOMS_GET_PARAM(PreTypeTag, bool, EnableTerminalOutput);
+            outputCout_ = Parameters::get<PreTypeTag, Properties::EnableTerminalOutput>();
 
         if (deckFilename.empty()) {
             if (mpiRank == 0) {
@@ -377,7 +401,7 @@ private:
 
         std::string cmdline_params;
         if (outputCout_) {
-            printFlowBanner(EclGenericVanguard::comm().size(),
+            printFlowBanner(FlowGenericVanguard::comm().size(),
                             getNumThreads<PreTypeTag>(),
                             Opm::moduleVersionName());
             std::ostringstream str;
@@ -389,12 +413,12 @@ private:
         try {
             this->readDeck(deckFilename,
                            outputDir,
-                           EWOMS_GET_PARAM(PreTypeTag, std::string, OutputMode),
-                           !EWOMS_GET_PARAM(PreTypeTag, bool, SchedRestart),
-                           EWOMS_GET_PARAM(PreTypeTag, bool,  EnableLoggingFalloutWarning),
-                           EWOMS_GET_PARAM(PreTypeTag, std::string, ParsingStrictness),
-                           mpiRank,
-                           EWOMS_GET_PARAM(PreTypeTag, int, EclOutputInterval),
+                           Parameters::get<PreTypeTag, Properties::OutputMode>(),
+                           !Parameters::get<PreTypeTag, Properties::SchedRestart>(),
+                           Parameters::get<PreTypeTag, Properties::EnableLoggingFalloutWarning>(),
+                           Parameters::get<PreTypeTag, Properties::ParsingStrictness>(),
+                           getNumThreads<PreTypeTag>(),
+                           Parameters::get<PreTypeTag, Properties::EclOutputInterval>(),
                            cmdline_params,
                            Opm::moduleVersion(),
                            Opm::compileTimestamp());
@@ -446,10 +470,10 @@ private:
             return EXIT_FAILURE;
         }
 
-        return flowEbosMICPMain(this->argc_,
-                                this->argv_,
-                                this->outputCout_,
-                                this->outputFiles_);
+        return flowMICPMain(this->argc_,
+                            this->argv_,
+                            this->outputCout_,
+                            this->outputFiles_);
     }
 
     int runTwoPhase(const Phases& phases)
@@ -461,9 +485,9 @@ private:
         // oil-gas
         if (phases.active( Phase::OIL ) && phases.active( Phase::GAS )) {
             if (diffusive) {
-                return flowEbosGasOilDiffuseMain(argc_, argv_, outputCout_, outputFiles_);
+                return flowGasOilDiffuseMain(argc_, argv_, outputCout_, outputFiles_);
             } else {
-                return flowEbosGasOilMain(argc_, argv_, outputCout_, outputFiles_);
+                return flowGasOilMain(argc_, argv_, outputCout_, outputFiles_);
             }
         }
 
@@ -475,16 +499,16 @@ private:
                 }
                 return EXIT_FAILURE;
             }
-            return flowEbosOilWaterMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowOilWaterMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
         // gas-water
         else if ( phases.active( Phase::GAS ) && phases.active( Phase::WATER ) ) {
             if (disgasw || vapwat) {
                 if (diffusive) {
-                    return flowEbosGasWaterDissolutionDiffuseMain(argc_, argv_, outputCout_, outputFiles_);
+                    return flowGasWaterDissolutionDiffuseMain(argc_, argv_, outputCout_, outputFiles_);
                 }
-                return flowEbosGasWaterDissolutionMain(argc_, argv_, outputCout_, outputFiles_);
+                return flowGasWaterDissolutionMain(argc_, argv_, outputCout_, outputFiles_);
             }
             if (diffusive) {
                 if (outputCout_) {
@@ -493,7 +517,7 @@ private:
                 return EXIT_FAILURE;
             }
 
-            return flowEbosGasWaterMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowGasWaterMain(argc_, argv_, outputCout_, outputFiles_);
         }
         else {
             if (outputCout_) {
@@ -519,20 +543,20 @@ private:
         if (phases.active(Phase::POLYMW)) {
             // only oil water two phase for now
             assert (phases.size() == 4);
-            return flowEbosOilWaterPolymerInjectivityMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowOilWaterPolymerInjectivityMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
         if (phases.size() == 3) { // oil water polymer case
-            return flowEbosOilWaterPolymerMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowOilWaterPolymerMain(argc_, argv_, outputCout_, outputFiles_);
         }
         else {
-            return flowEbosPolymerMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowPolymerMain(argc_, argv_, outputCout_, outputFiles_);
         }
     }
 
     int runFoam()
     {
-        return flowEbosFoamMain(argc_, argv_, outputCout_, outputFiles_);
+        return flowFoamMain(argc_, argv_, outputCout_, outputFiles_);
     }
 
     int runWaterOnly(const Phases& phases)
@@ -545,7 +569,7 @@ private:
             return EXIT_FAILURE;
         }
 
-        return flowEbosWaterOnlyMain(argc_, argv_, outputCout_, outputFiles_);
+        return flowWaterOnlyMain(argc_, argv_, outputCout_, outputFiles_);
     }
 
     int runWaterOnlyEnergy(const Phases& phases)
@@ -558,7 +582,7 @@ private:
             return EXIT_FAILURE;
         }
 
-        return flowEbosWaterOnlyEnergyMain(argc_, argv_, outputCout_, outputFiles_);
+        return flowWaterOnlyEnergyMain(argc_, argv_, outputCout_, outputFiles_);
     }
 
     int runBrine(const Phases& phases)
@@ -574,30 +598,30 @@ private:
         if (phases.size() == 3) {
 
             if (phases.active(Phase::OIL)){ // oil water brine case
-                return flowEbosOilWaterBrineMain(argc_, argv_, outputCout_, outputFiles_);
+                return flowOilWaterBrineMain(argc_, argv_, outputCout_, outputFiles_);
             }
             if (phases.active(Phase::GAS)){ // gas water brine case
                 if (eclipseState_->getSimulationConfig().hasPRECSALT() &&
                     eclipseState_->getSimulationConfig().hasVAPWAT()) {
                     //case with water vaporization into gas phase and salt precipitation
-                    return flowEbosGasWaterSaltprecVapwatMain(argc_, argv_, outputCout_, outputFiles_);
+                    return flowGasWaterSaltprecVapwatMain(argc_, argv_, outputCout_, outputFiles_);
                 }
                 else {
-                    return flowEbosGasWaterBrineMain(argc_, argv_, outputCout_, outputFiles_);
+                    return flowGasWaterBrineMain(argc_, argv_, outputCout_, outputFiles_);
                 }
             }
         }
         else if (eclipseState_->getSimulationConfig().hasPRECSALT()) {
             if (eclipseState_->getSimulationConfig().hasVAPWAT()) {
                     //case with water vaporization into gas phase and salt precipitation
-                    return flowEbosBrinePrecsaltVapwatMain(argc_, argv_, outputCout_, outputFiles_);
+                    return flowBrinePrecsaltVapwatMain(argc_, argv_, outputCout_, outputFiles_);
             }
             else {
-                return flowEbosBrineSaltPrecipitationMain(argc_, argv_, outputCout_, outputFiles_);
+                return flowBrineSaltPrecipitationMain(argc_, argv_, outputCout_, outputFiles_);
             }
         }
         else {
-            return flowEbosBrineMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowBrineMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
         return EXIT_FAILURE;
@@ -606,16 +630,16 @@ private:
     int runSolvent(const Phases& phases)
     {
         if (phases.active(Phase::FOAM)) {
-            return flowEbosSolventFoamMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowSolventFoamMain(argc_, argv_, outputCout_, outputFiles_);
         }
         // solvent + gas + water
         if (!phases.active( Phase::OIL ) && phases.active( Phase::WATER ) && phases.active( Phase::GAS )) {
-            return flowEbosGasWaterSolventMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowGasWaterSolventMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
         // solvent + gas + water + oil
         if (phases.active( Phase::OIL ) && phases.active( Phase::WATER ) && phases.active( Phase::GAS )) {
-            return flowEbosSolventMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowSolventMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
         if (outputCout_)
@@ -627,26 +651,26 @@ private:
 
     int runExtendedBlackOil()
     {
-        return flowEbosExtboMain(argc_, argv_, outputCout_, outputFiles_);
+        return flowExtboMain(argc_, argv_, outputCout_, outputFiles_);
     }
 
     int runThermal(const Phases& phases)
     {
         // oil-gas-thermal
         if (!phases.active( Phase::WATER ) && phases.active( Phase::OIL ) && phases.active( Phase::GAS )) {
-            return flowEbosGasOilEnergyMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowGasOilEnergyMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
         // water-gas-thermal
         if (!phases.active( Phase::OIL ) && phases.active( Phase::WATER ) && phases.active( Phase::GAS )) {
 
             if (phases.active(Phase::BRINE)){
-                return flowEbosGasWaterSaltprecEnergyMain(argc_, argv_, outputCout_, outputFiles_);
+                return flowGasWaterSaltprecEnergyMain(argc_, argv_, outputCout_, outputFiles_);
             }
-            return flowEbosGasWaterEnergyMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowGasWaterEnergyMain(argc_, argv_, outputCout_, outputFiles_);
         }
 
-        return flowEbosEnergyMain(argc_, argv_, outputCout_, outputFiles_);
+        return flowEnergyMain(argc_, argv_, outputCout_, outputFiles_);
     }
 
     int runBlackOil()
@@ -655,9 +679,9 @@ private:
         if (diffusive) {
             // Use the traditional linearizer, as the TpfaLinearizer does not
             // support the diffusion module yet.
-            return flowEbosBlackoilMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowBlackoilMain(argc_, argv_, outputCout_, outputFiles_);
         } else {
-            return flowEbosBlackoilTpfaMain(argc_, argv_, outputCout_, outputFiles_);
+            return flowBlackoilTpfaMain(argc_, argv_, outputCout_, outputFiles_);
         }
     }
 
@@ -667,7 +691,7 @@ private:
                   const bool init_from_restart_file,
                   const bool allRanksDbgPrtLog,
                   const std::string& parsingStrictness,
-                  const int mpiRank,
+                  const std::size_t numThreads,
                   const int output_param,
                   const std::string& parameters,
                   std::string_view moduleVersion,
@@ -691,7 +715,7 @@ private:
         else {
             threads = 2;
 
-            const int input_threads = EWOMS_GET_PARAM(TypeTag, int, ThreadsPerProcess);
+            const int input_threads = Parameters::get<TypeTag, Properties::ThreadsPerProcess>();
 
             if (input_threads > 0)
                 threads = input_threads;
@@ -704,12 +728,12 @@ private:
     }
 
 #if HAVE_DAMARIS
-    void setupDamaris(const std::string& outputDir,
-                      const bool enableDamarisOutputCollective);
+    void setupDamaris(const std::string& outputDir);
 #endif
 
     int argc_{0};
     char** argv_{nullptr};
+    bool ownMPI_{true}; //!< True if we "own" MPI and should init / finalize
     bool outputCout_{false};
     bool outputFiles_{false};
     double setupTime_{0.0};

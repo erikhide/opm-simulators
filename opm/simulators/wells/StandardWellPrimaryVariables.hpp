@@ -33,11 +33,11 @@ namespace Opm
 {
 
 class DeferredLogger;
-template<class FluidSystem, class Indices, class Scalar> class WellInterfaceIndices;
+template<class FluidSystem, class Indices> class WellInterfaceIndices;
 class WellState;
 
 //! \brief Class holding primary variables for StandardWell.
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 class StandardWellPrimaryVariables {
 protected:
     // the positions of the primary variables for StandardWell
@@ -82,12 +82,13 @@ public:
     static constexpr int GFrac = has_gfrac_variable ? has_wfrac_variable + 1 : -1000;
     static constexpr int SFrac = !Indices::enableSolvent ? -1000 : has_wfrac_variable+has_gfrac_variable+1;
 
+    using Scalar = typename FluidSystem::Scalar;
     //! \brief Evaluation for the well equations.
     using EvalWell = DenseAd::DynamicEvaluation<Scalar, numStaticWellEq + Indices::numEq + 1>;
     using BVectorWell = typename StandardWellEquations<Scalar,Indices::numEq>::BVectorWell;
 
     //! \brief Constructor initializes reference to well interface.
-    StandardWellPrimaryVariables(const WellInterfaceIndices<FluidSystem,Indices,Scalar>& well)
+    StandardWellPrimaryVariables(const WellInterfaceIndices<FluidSystem,Indices>& well)
         : well_(well)
     {}
 
@@ -112,7 +113,8 @@ public:
     void updateNewton(const BVectorWell& dwells,
                       const bool stop_or_zero_rate_target,
                       const double dFLimit,
-                      const double dBHPLimit);
+                      const double dBHPLimit,
+                      DeferredLogger& deferred_logger);
 
     //! \brief Update polymer molecular weight values from newton update vector.
     void updateNewtonPolyMW(const BVectorWell& dwells);
@@ -150,7 +152,7 @@ public:
 private:
     //! \brief Calculate a relaxation factor for producers.
     //! \details To avoid overshoot of the fractions which might result in negative rates.
-    double relaxationFactorFractionsProducer(const BVectorWell& dwells) const;
+    double relaxationFactorFractionsProducer(const BVectorWell& dwells, DeferredLogger& deferred_logger) const;
 
     //! \brief Returns volume fraction for a component.
     EvalWell volumeFraction(const unsigned compIdx) const;
@@ -166,7 +168,7 @@ private:
     //! \details Contain derivatives and are used in AD calculation
     std::vector<EvalWell> evaluation_;
 
-    const WellInterfaceIndices<FluidSystem,Indices,Scalar>& well_; //!< Reference to well interface
+    const WellInterfaceIndices<FluidSystem,Indices>& well_; //!< Reference to well interface
 
     //! \brief Total number of the well equations and primary variables.
     //! \details There might be extra equations be used, numWellEq will be updated during the initialization

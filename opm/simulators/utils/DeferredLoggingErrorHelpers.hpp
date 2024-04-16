@@ -32,7 +32,7 @@
 #include <exception>
 #include <stdexcept>
 
-// Macro to throw an exception.
+// Macro to log an error and throw an exception.
 // Inspired by ErrorMacros.hpp in opm-common.
 // NOTE: For this macro to work, the
 // exception class must exhibit a constructor with the signature
@@ -50,6 +50,23 @@
         deferred_logger.error(oss_);                           \
         throw Exception(oss_);                                 \
     } while (false)
+
+// Macro to log a problem and throw an exception.
+// Idenitical to OPM_DEFLOG_THROW() except for using
+// the "problem" category instead of "error" for the
+// log message. The Exception argument will typically
+// be NumericalProblem.
+//
+// Usage: OPM_DEFLOG_PROBLEM(ExceptionClass, "Error message", DeferredLogger);
+#define OPM_DEFLOG_PROBLEM(Exception, message, deferred_logger)  \
+    do {                                                         \
+        std::string oss_ = std::string{"["} + __FILE__ + ":" +   \
+                           std::to_string(__LINE__) + "] " +     \
+                           message;                              \
+        deferred_logger.problem(oss_);                           \
+        throw Exception(oss_);                                   \
+    } while (false)
+
 
 namespace {
 
@@ -97,6 +114,10 @@ inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logge
                                              const bool terminal_output,
                                              Opm::Parallel::Communication comm)
 {
+    // add exception message to logger in order to display message from all ranks
+    if (exc_type != Opm::ExceptionType::NONE && comm.size() > 1) {
+        deferred_logger.error("[Exception on rank " + std::to_string(comm.rank()) + "]: " + message);
+    }
     Opm::DeferredLogger global_deferredLogger = gatherDeferredLogger(deferred_logger, comm);
 
     if (terminal_output) {

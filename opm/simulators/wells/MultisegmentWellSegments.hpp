@@ -34,15 +34,17 @@ namespace Opm {
     class  SegmentState;
     class  UnitSystem;
     class  WellInterfaceGeneric;
+    class  SummaryState;
 
 } // namespace Opm
 
 namespace Opm {
 
-template<typename FluidSystem, typename Indices, typename Scalar>
+template<typename FluidSystem, typename Indices>
 class MultisegmentWellSegments
 {
-    using PrimaryVariables = MultisegmentWellPrimaryVariables<FluidSystem,Indices,Scalar>;
+    using PrimaryVariables = MultisegmentWellPrimaryVariables<FluidSystem,Indices>;
+    using Scalar = typename FluidSystem::Scalar;
     using EvalWell = typename PrimaryVariables::EvalWell;
 
 public:
@@ -71,24 +73,36 @@ public:
                               const int pvt_region_index,
                               const int seg_idx) const;
 
-    EvalWell getFrictionPressureLoss(const int seg, const bool return_upwind_derivatives) const;
+    EvalWell getFrictionPressureLoss(const int seg, 
+                                     const bool extra_reverse_flow_derivatives = false) const;
 
     // pressure drop for Spiral ICD segment (WSEGSICD)
-    EvalWell pressureDropSpiralICD(const int seg) const;
+    EvalWell pressureDropSpiralICD(const int seg,
+                                   const bool extra_reverse_flow_derivatives = false) const;
 
     // pressure drop for Autonomous ICD segment (WSEGAICD)
     EvalWell pressureDropAutoICD(const int seg,
-                                 const UnitSystem& unit_system) const;
+                                 const UnitSystem& unit_system,
+                                 const bool extra_reverse_flow_derivatives = false) const;
 
     // pressure drop for sub-critical valve (WSEGVALV)
-    EvalWell pressureDropValve(const int seg) const;
+    EvalWell pressureDropValve(const int seg, 
+                               const SummaryState& st,
+                               const bool extra_reverse_flow_derivatives = false) const;
 
-    // pressure loss due to acceleration
-    EvalWell accelerationPressureLoss(const int seg) const;
+    // pressure loss contribution due to acceleration
+    EvalWell accelerationPressureLossContribution(const int seg,
+                                                  const double area, 
+                                                  const bool extra_reverse_flow_derivatives = false) const;
 
     const std::vector<std::vector<int>>& inlets() const
     {
         return inlets_;
+    }
+
+    const std::vector<int>& inlets(const int seg) const
+    {
+        return inlets_[seg];
     }
 
     const std::vector<std::vector<int>>& perforations() const
@@ -158,7 +172,7 @@ private:
     std::vector<std::vector<EvalWell>> phase_fractions_;
     std::vector<std::vector<EvalWell>> phase_viscosities_;
 
-    const WellInterfaceGeneric& well_;
+    WellInterfaceGeneric& well_;
 
     void copyPhaseDensities(const unsigned    phaseIdx,
                             const std::size_t stride,

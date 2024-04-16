@@ -1,6 +1,7 @@
 /*
   Copyright 2022 SINTEF Digital, Mathematics and Cybernetics.
-
+  Copyright 2023 INRIA
+  
   This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
@@ -16,10 +17,13 @@
   You should have received a copy of the GNU General Public License
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
+#ifndef DAMARIS_OUTPUT_MODULE_HPP
+#define DAMARIS_OUTPUT_MODULE_HPP
 
-#include <string>
-#include <Damaris.h>
 #include <opm/simulators/utils/ParallelCommunication.hpp>
+
+#include <map>
+#include <string>
 
 /*
     Below is the XML file for Damaris that is supported by Damaris.
@@ -28,14 +32,20 @@
     Keywords.
 */
 
+namespace Opm::DamarisOutput {
 
-namespace Opm::DamarisOutput
-{
- // Initialize an XML file
- std::string initDamarisXmlFile();
- // Initialize Damaris by filling in th XML file and stroring it in the chosed directory
- void initializeDamaris(MPI_Comm comm, int mpiRank, std::string OutputDir, bool enableDamarisOutputCollective);
- // Setup Damaris Parameters for writing e.g., grid size and communicator to output "PRESSURE" field
- void setupDamarisWritingPars(Parallel::Communication comm, const int n_elements_local_grid);
+// Initialize an XML file
+std::string initDamarisXmlFile();
+ 
+/**
+*   Initialize Damaris by either:
+*  1/ Filling in a templated XML file and storing it in the chosen directory (output directory)
+*  2/ Reading a file specified by the environment variable FLOW_DAMARIS_XML_FILE 
+*  
+*/
+void initializeDamaris(const Parallel::Communication comm, const int mpiRank,
+                       const std::map<std::string, std::string>& find_replace_map);
 
 } // namespace Opm::DamarisOutput
+
+#endif // DAMARIS_OUTPUT_MODULE_HPP

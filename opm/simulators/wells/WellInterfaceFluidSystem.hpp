@@ -52,7 +52,7 @@ protected:
     static constexpr int INVALIDCOMPLETION = std::numeric_limits<int>::max();
 
 public:
-    int flowPhaseToEbosPhaseIdx(const int phaseIdx) const;
+    int flowPhaseToModelPhaseIdx(const int phaseIdx) const;
 
     static constexpr int Water = BlackoilPhases::Aqua;
     static constexpr int Oil = BlackoilPhases::Liquid;
@@ -79,7 +79,9 @@ protected:
 
     bool checkIndividualConstraints(SingleWellState& ws,
                                     const SummaryState& summaryState,
-                                    DeferredLogger& deferred_logger) const;
+                                    DeferredLogger& deferred_logger,
+                                    const std::optional<Well::InjectionControls>& inj_controls = std::nullopt,
+                                    const std::optional<Well::ProductionControls>& prod_controls = std::nullopt) const;
 
     bool checkGroupConstraints(WellState& well_state,
                                const GroupState& group_state,

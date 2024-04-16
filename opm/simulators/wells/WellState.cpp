@@ -397,23 +397,17 @@ void WellState::init(const std::vector<double>& cellPressures,
 
                 // Productivity index.
                 new_well.productivity_index = prev_well.productivity_index;
-            }
 
-            // If in the new step, there is no THP related
-            // target/limit anymore, its thp value should be set to
-            // zero.
-            const bool has_thp = well.isInjector()
-                ? well.injectionControls (summary_state).hasControl(Well::InjectorCMode::THP)
-                : well.productionControls(summary_state).hasControl(Well::ProducerCMode::THP);
-
-            if (!has_thp) {
-                new_well.thp = 0;
+                // if there is no valid VFP table associated, we set the THP value to be 0.
+                if (well.vfp_table_number() == 0) {
+                    new_well.thp = 0.;
+                }
             }
         }
     }
 
 
-    updateWellsDefaultALQ(wells_ecl);
+    updateWellsDefaultALQ(wells_ecl, summary_state);
 }
 
 void WellState::resize(const std::vector<Well>& wells_ecl,
@@ -591,6 +585,7 @@ void WellState::reportConnections(std::vector<data::Connection>& connections,
     connections.resize(num_perf_well);
     const auto& perf_rates = perf_data.rates;
     const auto& perf_pressure = perf_data.pressure;
+    const auto& perf_mixing_rates = perf_data.phase_mixing_rates;
     for (int i = 0; i < num_perf_well; ++i) {
       const auto active_index = perf_data.cell_index[i];
         auto& connection = connections[ i ];
@@ -598,6 +593,10 @@ void WellState::reportConnections(std::vector<data::Connection>& connections,
         connection.pressure = perf_pressure[i];
         connection.reservoir_rate = perf_rates[i];
         connection.trans_factor = perf_data.connection_transmissibility_factor[i];
+        connection.d_factor = perf_data.connection_d_factor[i];
+        connection.compact_mult = perf_data.connection_compaction_tmult[i];
+        connection.rates.set(rt::dissolved_gas, perf_mixing_rates[i][ws.dissolved_gas]);
+        connection.rates.set(rt::vaporized_oil, perf_mixing_rates[i][ws.vaporized_oil]);
         if (!ws.producer) {
             const auto& filtrate_data = perf_data.filtrate_data;
             auto& filtrate = connection.filtrate;
@@ -652,7 +651,6 @@ void WellState::reportConnections(std::vector<data::Connection>& connections,
             const auto& perf_solvent_rate = perf_data.solvent_rates;
             comp.rates.set( rt::solvent, perf_solvent_rate[local_conn_index] );
         }
-
         ++local_conn_index;
     }
 }
@@ -865,7 +863,9 @@ void WellState::communicateGroupRates(const Comm& comm)
                 data[pos++] = 0;
         }
     }
-    pos += this->alq_state.pack_data(&data[pos]);
+    if (!data.empty() && pos != sz) {
+        pos += this->alq_state.pack_data(&data[pos]);
+    }
     assert(pos == sz);
 
     // Communicate it with a single sum() call.
@@ -879,7 +879,9 @@ void WellState::communicateGroupRates(const Comm& comm)
         for (auto& value : rates)
             value = data[pos++];
     }
-    pos += this->alq_state.unpack_data(&data[pos]);
+    if (!data.empty() && pos != sz) {
+        pos += this->alq_state.unpack_data(&data[pos]);
+    }
     assert(pos == sz);
 }
 
@@ -996,14 +998,14 @@ bool WellState::wellIsOwned(const std::string& wellName) const
     return wellIsOwned(well_index.value(), wellName);
 }
 
-void WellState::updateWellsDefaultALQ(const std::vector<Well>& wells_ecl)
+void WellState::updateWellsDefaultALQ(const std::vector<Well>& wells_ecl, const SummaryState& summary_state)
 {
     const int nw = wells_ecl.size();
     for (int i = 0; i<nw; i++) {
         const Well &well = wells_ecl[i];
         if (well.isProducer()) {
             // NOTE: This is the value set in item 12 of WCONPROD, or with WELTARG
-            auto alq = well.alq_value();
+            auto alq = well.alq_value(summary_state);
             this->alq_state.update_default(well.name(), alq);
         }
     }

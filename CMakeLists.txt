@@ -13,9 +13,9 @@
 
 # Mandatory call to project
 
-project(opm-simulators C CXX)
-
 cmake_minimum_required (VERSION 3.10)
+
+project(opm-simulators C CXX)
 
 
 option(SIBLING_SEARCH "Search for other modules in sibling directories?" ON)
@@ -256,8 +256,7 @@ macro (config_hook)
   opm_need_version_of ("opm-models")
 
   if(NOT fmt_FOUND)
-    add_definitions(-DFMT_HEADER_ONLY)
-    list(APPEND EXTRA_INCLUDES SYSTEM ${PROJECT_SOURCE_DIR}/external/fmtlib/include)
+    include(DownloadFmt)
   endif()
   if(USE_TRACY_PROFILER AND Tracy_FOUND)
     set(USE_TRACY 1)
@@ -292,12 +291,11 @@ macro (files_hook)
         unset(ROCALUTION_FOUND)
         unset(HAVE_ROCALUTION)
       endif()
+    endif()
+    if(rocsparse_FOUND AND rocblas_FOUND)
+      set(HAVE_ROCSPARSE 1)
     else()
-      if(rocsparse_FOUND AND rocblas_FOUND)
-        set(HAVE_ROCSPARSE 1)
-      else()
-        unset(HAVE_ROCSPARSE)
-      endif()
+      unset(HAVE_ROCSPARSE)
     endif()
     if(ROCALUTION_FOUND)
       set(HAVE_ROCALUTION 1)
@@ -312,6 +310,11 @@ macro (files_hook)
       "only normal restart without hdf5 file support.")
     set(HDF5_FOUND OFF)
     unset(HAVE_HDF5)
+  endif()
+  if(HAVE_ROCSPARSE AND HAVE_CUDA)
+    message(WARNING "WARNING! Using CUDA and ROCm at the same time is not allowed. Please choose only one of them by setting CMAKE_DISABLE_FIND_PACKAGE_<rocsparse|CUDA>=<ON|OFF>. Disabling CUDA...\n")
+    set(CUDA_FOUND OFF)
+    unset(HAVE_CUDA)
   endif()
   # read the list of components from this file (in the project directory);
   # it should set various lists with the names of the files to include
@@ -345,6 +348,11 @@ opm_add_test(test_tuning_tsinit_nextstep
 if (HAVE_OPM_TESTS)
     include (${CMAKE_CURRENT_SOURCE_DIR}/compareECLFiles.cmake)
 endif()
+
+target_sources(test_outputdir PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+target_sources(test_equil PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+target_sources(test_RestartSerialization PRIVATE $<TARGET_OBJECTS:moduleVersion>)
+target_sources(test_glift1 PRIVATE $<TARGET_OBJECTS:moduleVersion>)
 
 opm_set_test_driver(${CMAKE_CURRENT_SOURCE_DIR}/tests/run-parallel-unitTest.sh "")
 
@@ -468,6 +476,51 @@ opm_add_test(test_parallel_wbp_calculation_well_openconns
     2
 )
 
+opm_add_test(test_parallel_region_phase_pvaverage_np2
+  EXE_NAME
+    test_region_phase_pvaverage
+  CONDITION
+    MPI_FOUND AND Boost_UNIT_TEST_FRAMEWORK_FOUND
+  DRIVER_ARGS
+    -n 2
+    -b ${PROJECT_BINARY_DIR}
+  TEST_ARGS
+    --run_test=Parallel/*
+  NO_COMPILE
+  PROCESSORS
+    2
+)
+
+opm_add_test(test_parallel_region_phase_pvaverage_np3
+  EXE_NAME
+    test_region_phase_pvaverage
+  CONDITION
+    MPI_FOUND AND Boost_UNIT_TEST_FRAMEWORK_FOUND
+  DRIVER_ARGS
+    -n 3
+    -b ${PROJECT_BINARY_DIR}
+  TEST_ARGS
+    --run_test=Parallel/*
+  NO_COMPILE
+  PROCESSORS
+    3
+)
+
+opm_add_test(test_parallel_region_phase_pvaverage_np4
+  EXE_NAME
+    test_region_phase_pvaverage
+  CONDITION
+    MPI_FOUND AND Boost_UNIT_TEST_FRAMEWORK_FOUND
+  DRIVER_ARGS
+    -n 4
+    -b ${PROJECT_BINARY_DIR}
+  TEST_ARGS
+    --run_test=Parallel/*
+  NO_COMPILE
+  PROCESSORS
+    4
+)
+
 opm_add_test(test_broadcast
   DEPENDS "opmsimulators"
   LIBRARIES opmsimulators ${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}
@@ -510,6 +563,19 @@ opm_add_test(test_HDF5Serializer_Parallel
     4
 )
 
+opm_add_test(test_rstconv_parallel
+  EXE_NAME
+    test_rstconv
+  CONDITION
+    MPI_FOUND AND Boost_UNIT_TEST_FRAMEWORK_FOUND
+  DRIVER_ARGS
+    -n 4
+    -b ${PROJECT_BINARY_DIR}
+  NO_COMPILE
+  PROCESSORS
+    4
+)
+
 include(OpmBashCompletion)
 
 if (NOT BUILD_FLOW)
@@ -548,18 +614,18 @@ set(FLOW_VARIANT_MODELS brine_energy onephase onephase_energy)
 
 set(FLOW_TGTS)
 foreach(OBJ ${COMMON_MODELS} ${FLOW_MODELS} ${FLOW_VARIANT_MODELS})
-  add_library(flow_lib${OBJ} OBJECT flow/flow_ebos_${OBJ}.cpp)
+  add_library(flow_lib${OBJ} OBJECT flow/flow_${OBJ}.cpp)
   list(APPEND FLOW_TGTS $<TARGET_OBJECTS:flow_lib${OBJ}>)
   if(TARGET fmt::fmt)
     target_link_libraries(flow_lib${OBJ} fmt::fmt)
   endif()
-  if(TARGET opmcommon AND CMAKE_GENERATOR MATCHES "Makefiles")
+  if(TARGET opmcommon)
       add_dependencies(flow_lib${OBJ} opmcommon)
   endif()
   opm_add_test(flow_${OBJ}
                ONLY_COMPILE
                SOURCES
-               flow/flow_${OBJ}.cpp
+               flow/flow_${OBJ}_main.cpp
                $<TARGET_OBJECTS:moduleVersion>
                $<TARGET_OBJECTS:flow_lib${OBJ}>
                EXE_NAME flow_${OBJ}
@@ -655,7 +721,10 @@ if(CUDA_FOUND)
                        cuda_safe_call
                        cuda_check_last_error
                        cublas_handle
+                       cujac
                        cusparse_handle
+                       cuSparse_matrix_operations
+                       cuVector_operations
                        cuvector
                        cusparsematrix
                        cuseqilu0

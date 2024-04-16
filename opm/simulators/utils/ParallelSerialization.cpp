@@ -46,6 +46,7 @@
 #include <opm/input/eclipse/Schedule/UDQ/UDQASTNode.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQConfig.hpp>
 #include <opm/input/eclipse/Schedule/Well/NameOrder.hpp>
+#include <opm/input/eclipse/Schedule/Well/WDFAC.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellConnections.hpp>
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellBrineProperties.hpp>
@@ -61,7 +62,8 @@
 #include <opm/input/eclipse/Schedule/Well/WVFPDP.hpp>
 #include <opm/input/eclipse/Schedule/Well/WVFPEXP.hpp>
 
-#include <ebos/eclmpiserializer.hh>
+
+#include <opm/simulators/utils/MPISerializer.hpp>
 
 #include <dune/common/parallel/mpihelper.hh>
 
@@ -73,18 +75,19 @@ void eclStateBroadcast(Parallel::Communication comm, EclipseState& eclState, Sch
                        Action::State& actionState,
                        WellTestState&  wtestState)
 {
-    Opm::EclMpiSerializer ser(comm);
+    Opm::Parallel::MpiSerializer ser(comm);
     ser.broadcast(0, eclState, schedule, summaryConfig, udqState, actionState, wtestState);
 }
 
 template <class T>
 void eclBroadcast(Parallel::Communication comm, T& data)
 {
-    Opm::EclMpiSerializer ser(comm);
+    ::Opm::Parallel::MpiSerializer ser(comm);
     ser.broadcast(data);
 }
 
-template void eclBroadcast<TransMult>(Parallel::Communication, TransMult&);
-template void eclBroadcast<Schedule>(Parallel::Communication, Schedule&);
+template void eclBroadcast(Parallel::Communication, TransMult&);
+template void eclBroadcast(Parallel::Communication, Schedule&);
+template void eclBroadcast(Parallel::Communication, SummaryConfig&);
 
 }

@@ -37,16 +37,15 @@
 #include <opm/simulators/wells/WellState.hpp>
 #include <opm/simulators/linalg/bda/WellContributions.hpp>
 
-#include <cassert>
 #include <cmath>
 #include <cstddef>
 
 namespace Opm
 {
 
-template<class FluidSystem, class Indices, class Scalar>
-StandardWellEval<FluidSystem,Indices,Scalar>::
-StandardWellEval(const WellInterfaceIndices<FluidSystem,Indices,Scalar>& baseif)
+template<class FluidSystem, class Indices>
+StandardWellEval<FluidSystem,Indices>::
+StandardWellEval(const WellInterfaceIndices<FluidSystem,Indices>& baseif)
     : baseif_(baseif)
     , primary_variables_(baseif_)
     , F0_(numWellConservationEq)
@@ -55,9 +54,9 @@ StandardWellEval(const WellInterfaceIndices<FluidSystem,Indices,Scalar>& baseif)
 {
 }
 
-template<class FluidSystem, class Indices, class Scalar>
-typename StandardWellEval<FluidSystem,Indices,Scalar>::EvalWell
-StandardWellEval<FluidSystem,Indices,Scalar>::
+template<class FluidSystem, class Indices>
+typename StandardWellEval<FluidSystem,Indices>::EvalWell
+StandardWellEval<FluidSystem,Indices>::
 extendEval(const Eval& in) const
 {
     EvalWell out(primary_variables_.numWellEq() + Indices::numEq, in.value());
@@ -67,9 +66,9 @@ extendEval(const Eval& in) const
     return out;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 void
-StandardWellEval<FluidSystem,Indices,Scalar>::
+StandardWellEval<FluidSystem,Indices>::
 updateWellStateFromPrimaryVariables(const bool stop_or_zero_rate_target,
                                     WellState& well_state,
                                     const SummaryState& summary_state,
@@ -87,9 +86,9 @@ updateWellStateFromPrimaryVariables(const bool stop_or_zero_rate_target,
                       well_state, summary_state, deferred_logger);
 }
 
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 void
-StandardWellEval<FluidSystem,Indices,Scalar>::
+StandardWellEval<FluidSystem,Indices>::
 computeAccumWell()
 {
     for (std::size_t eq_idx = 0; eq_idx < F0_.size(); ++eq_idx) {
@@ -97,15 +96,16 @@ computeAccumWell()
     }
 }
 
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 ConvergenceReport
-StandardWellEval<FluidSystem,Indices,Scalar>::
+StandardWellEval<FluidSystem,Indices>::
 getWellConvergence(const WellState& well_state,
                    const std::vector<double>& B_avg,
                    const double maxResidualAllowed,
                    const double tol_wells,
                    const double relaxed_tolerance_flow,
                    const bool relax_tolerance,
+                   const bool well_is_stopped, 
                    std::vector<double>& res,
                    DeferredLogger& deferred_logger) const
 {
@@ -150,12 +150,13 @@ getWellConvergence(const WellState& well_state,
         checkConvergenceControlEq(well_state,
                                   {1.e3, 1.e4, 1.e-4, 1.e-6, maxResidualAllowed},
                                   std::abs(this->linSys_.residual()[0][Bhp]),
+                                  well_is_stopped, 
                                   report,
                                   deferred_logger);
 
     // for stopped well, we do not enforce the following checking to avoid dealing with sign of near-zero values
     // for BHP or THP controlled wells, we need to make sure the flow direction is correct
-    if (!baseif_.wellIsStopped() && baseif_.isPressureControlled(well_state)) {
+    if (!well_is_stopped && baseif_.isPressureControlled(well_state)) {
         // checking the flow direction
         const double sign = baseif_.isProducer() ? -1. : 1.;
         const auto weight_total_flux = this->primary_variables_.value(PrimaryVariables::WQTotal) * sign;
@@ -169,9 +170,9 @@ getWellConvergence(const WellState& well_state,
     return report;
 }
 
-template<class FluidSystem, class Indices, class Scalar>
+template<class FluidSystem, class Indices>
 void
-StandardWellEval<FluidSystem,Indices,Scalar>::
+StandardWellEval<FluidSystem,Indices>::
 init(std::vector<double>& perf_depth,
      const std::vector<double>& depth_arg,
      const int num_cells,
@@ -202,7 +203,7 @@ init(std::vector<double>& perf_depth,
 }
 
 #define INSTANCE(...) \
-template class StandardWellEval<BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,__VA_ARGS__,double>;
+template class StandardWellEval<BlackOilFluidSystem<double,BlackOilDefaultIndexTraits>,__VA_ARGS__>;
 
 // One phase
 INSTANCE(BlackOilOnePhaseIndices<0u,0u,0u,0u,false,false,0u,1u,0u>)

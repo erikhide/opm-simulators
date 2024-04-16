@@ -45,7 +45,7 @@ add_test_compare_restarted_simulation(CASENAME numerical_aquifer_3d_1aqu
                                       REL_TOL 4.0e-3
                                       RESTART_STEP 3
                                       DIR aquifer-num
-                                      TEST_ARGS --sched-restart=true --enable-tuning=true)
+                                      TEST_ARGS --enable-tuning=true --relaxed-max-pv-fraction=0.0 --enable-drift-compensation=false)
 
 add_test_compare_restarted_simulation(CASENAME numerical_aquifer_3d_2aqu
                                       FILENAME 3D_2AQU_NUM
@@ -73,6 +73,24 @@ add_test_compare_restarted_simulation(CASENAME aquflux_02
                                       RESTART_STEP 50
                                       DIR aquifers
                                       TEST_ARGS --enable-tuning=true)
+
+add_test_compare_restarted_simulation(CASENAME network_01_restart
+                                      FILENAME NETWORK-01-RESTART
+                                      SIMULATOR flow
+                                      ABS_TOL ${abs_tol_restart}
+                                      REL_TOL ${rel_tol_restart}
+                                      RESTART_STEP 5
+                                      DIR network
+                                      TEST_ARGS --enable-tuning=true --local-well-solve-control-switching=true)
+
+add_test_compare_restarted_simulation(CASENAME network_01_reroute_restart
+                                      FILENAME NETWORK-01-REROUTE-RESTART
+                                      SIMULATOR flow
+                                      ABS_TOL ${abs_tol_restart}
+                                      REL_TOL ${rel_tol_restart}
+                                      RESTART_STEP 5
+                                      DIR network
+                                      TEST_ARGS --enable-tuning=true --local-well-solve-control-switching=true)
 
 # The dynamic MSW data is not written to /read from the restart file
 # We therefore accept significant deviation in the results.

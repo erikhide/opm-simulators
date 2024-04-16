@@ -15,10 +15,41 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "config.h"
-#include <flow/flow_ebos_blackoil_legacyassembly.hpp>
 
+#include <flow/flow_blackoil_legacyassembly.hpp>
 
-int main(int argc, char** argv)
+#include <opm/material/common/ResetLocale.hpp>
+#include <opm/simulators/flow/SimulatorFullyImplicitBlackoil.hpp>
+#include <opm/simulators/flow/Main.hpp>
+
+namespace Opm {
+
+std::unique_ptr<FlowMain<Properties::TTag::FlowProblem>>
+flowBlackoilMainInit(int argc, char** argv, bool outputCout, bool outputFiles)
 {
-    return Opm::flowEbosBlackoilMainStandalone(argc, argv);
+    // we always want to use the default locale, and thus spare us the trouble
+    // with incorrect locale settings.
+    resetLocale();
+
+    return std::make_unique<FlowMain<Properties::TTag::FlowProblem>>(
+        argc, argv, outputCout, outputFiles);
+}
+
+// ----------------- Main program -----------------
+int flowBlackoilMain(int argc, char** argv, bool outputCout, bool outputFiles)
+{
+    auto mainfunc = flowBlackoilMainInit(argc, argv, outputCout, outputFiles);
+    return mainfunc->execute();
+}
+
+int flowBlackoilMainStandalone(int argc, char** argv)
+{
+    using TypeTag = Properties::TTag::FlowProblem;
+    auto mainObject = std::make_unique<Opm::Main>(argc, argv);
+    auto ret = mainObject->runStatic<TypeTag>();
+    // Destruct mainObject as the destructor calls MPI_Finalize!
+    mainObject.reset();
+    return ret;
+}
+
 }

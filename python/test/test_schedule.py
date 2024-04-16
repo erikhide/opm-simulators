@@ -1,6 +1,5 @@
 import os
 import unittest
-from contextlib import contextmanager
 import datetime as dt
 from pathlib import Path
 import re
@@ -9,16 +8,7 @@ from opm.io.parser import Parser
 from opm.io.ecl_state import EclipseState
 from opm.io.schedule import Schedule
 from opm.io.summary import SummaryConfig
-
-@contextmanager
-def pushd(path):
-    cwd = os.getcwd()
-    if not os.path.isdir(path):
-        os.makedirs(path)
-    os.chdir(path)
-    yield
-    os.chdir(cwd)
-
+from .pytest_common import pushd
 
 class TestBasic(unittest.TestCase):
     @classmethod
