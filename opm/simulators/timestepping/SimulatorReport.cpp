@@ -210,6 +210,11 @@ namespace Opm
         os << std::endl;
     }
 
+    void SimulatorReportSingle::revertTime(const double dt)
+    {
+        this->global_time -= dt;
+    }
+
     SimulatorReport SimulatorReport::serializationTestObject()
     {
         return SimulatorReport{SimulatorReportSingle::serializationTestObject(),

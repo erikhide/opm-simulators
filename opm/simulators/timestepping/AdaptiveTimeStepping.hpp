@@ -123,6 +123,14 @@ template<class TypeTag, class MyTypeTag>
 struct MinTimeStepBasedOnNewtonIterations {
     using type = UndefinedProperty;
 };
+template<class TypeTag, class MyTypeTag>
+struct InputForPidController {
+    using type = UndefinedProperty;
+};
+template<class TypeTag, class MyTypeTag>
+struct TimeStepSafetyFactor {
+    using type = UndefinedProperty;
+};
 
 template<class TypeTag>
 struct SolverContinueOnConvergenceFailure<TypeTag, TTag::FlowTimeSteppingParameters> {
@@ -201,6 +209,14 @@ struct MinTimeStepBasedOnNewtonIterations<TypeTag, TTag::FlowTimeSteppingParamet
     using type = GetPropType<TypeTag, Scalar>;
     static constexpr type value = 0.0;
 };
+template<class TypeTag>
+struct InputForPidController<TypeTag, TTag::FlowTimeSteppingParameters> {
+    static constexpr int value = 1;
+};
+template<class TypeTag>
+struct TimeStepSafetyFactor<TypeTag, TTag::FlowTimeSteppingParameters> {
+    static constexpr double value = 0.8;
+};
 
 } // namespace Opm::Properties
 
@@ -225,14 +241,28 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
         class SolutionTimeErrorSolverWrapper : public RelativeChangeInterface
         {
             const Solver& solver_;
+            const int infoType_;
         public:
-            SolutionTimeErrorSolverWrapper(const Solver& solver)
-              : solver_(solver)
+            SolutionTimeErrorSolverWrapper(const Solver& solver, const int inputForPIDController)
+              : solver_(solver),
+              infoType_(inputForPIDController)
             {}
 
             /// return || u^n+1 - u^n || / || u^n+1 ||
             double relativeChange() const
             { return solver_.model().relativeChange(); }
+            double residualInfo() const
+            { return solver_.model().residualInfo(); }
+
+            double errorPID() const
+            {
+                if (infoType_ == 1) {
+                    return relativeChange();
+                }
+                else if (infoType_ == 2) {
+                    return residualInfo();
+                }
+            }
         };
 
         template<class E>
@@ -354,6 +384,14 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
             Parameters::registerParam<TypeTag, Properties::MinTimeStepBasedOnNewtonIterations>
                 ("The minimum time step size (in days for field and metric unit and hours for lab unit) "
                  "can be reduced to based on newton iteration counts");
+            Parameters::registerParam<TypeTag, Properties::InputForPidController>
+                ("Choose which input should be used for the PID controller. "
+                "Options available are: "
+                "'1' for relative change in solution variables, "
+                "'2' for residual");
+            Parameters::registerParam<TypeTag, Properties::TimeStepSafetyFactor>
+                ("Safety factor in the formula for the time step cutting after a "
+                "time step has failed to satisfy the tolerance criterion");
         }
 
         /** \brief  step method that acts like the solver::step method
@@ -396,6 +434,9 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
             // counter for solver restarts
             int restarts = 0;
 
+            int inputForPIDController = Parameters::get<TypeTag, Properties::InputForPidController>();
+            const double tol =  Parameters::get<TypeTag, Properties::TimeStepControlTolerance>();
+
             // sub step time loop
             while (!substepTimer.done()) {
                 // Maybe update tuning
@@ -413,8 +454,9 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
 
                 SimulatorReportSingle substepReport;
                 std::string causeOfFailure;
+                bool tooLargeTimeStep = false;
                 try {
-                    substepReport = solver.step(substepTimer);
+                    substepReport = solver.step(substepTimer, inputForPIDController, tol);
 
                     if (solverVerbose_) {
                         // report number of linear iterations
@@ -434,6 +476,13 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
 
                     logException_(e, solverVerbose_);
                     // since linearIterations is < 0 this will restart the solver
+                }
+                catch (const TimeSteppingBreakdown& e) {
+                    substepReport = solver.failureReport();
+                    tooLargeTimeStep = true;
+                    causeOfFailure = "Error in time stepping exceeded tolerance";
+
+                    logException_(e, solverVerbose_);
                 }
                 catch (const NumericalProblem& e) {
                     substepReport = solver.failureReport();
@@ -481,37 +530,46 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
                     OpmLog::problem(msg);
                 }
 
+                // create object to compute the time error, simply forwards the call to the model
+                SolutionTimeErrorSolverWrapper<Solver> relativeChangeOrResidual(solver, inputForPIDController);
+
                 if (substepReport.converged || continue_on_uncoverged_solution) {
 
                     // advance by current dt
                     ++substepTimer;
 
-                    // create object to compute the time error, simply forwards the call to the model
-                    SolutionTimeErrorSolverWrapper<Solver> relativeChange(solver);
-
                     // compute new time step estimate
                     const int iterations = useNewtonIteration_ ? substepReport.total_newton_iterations
                         : substepReport.total_linear_iterations;
-                    double dtEstimate = timeStepControl_->computeTimeStepSize(dt, iterations, relativeChange,
+                    double dtEstimate = timeStepControl_->computeTimeStepSize(dt, iterations, relativeChangeOrResidual,
                                                                                substepTimer.simulationTimeElapsed());
+
+                    double convergenceRateReference = 1.0;
+                    double dtEstimateFromConvergenceRate = dt * convergenceRateReference / std::max(1e-10, solver.getConvergenceRate());
+
+                    if (solver.model().simulator().gridView().comm().rank() == 0) {
+                        std::cout << "First dt estimate: " << dtEstimate << std::endl;
+                        std::cout << "Second dt esimate: " << dtEstimateFromConvergenceRate << std::endl;
+                    }
+                    dtEstimate = std::min(dtEstimate, dtEstimateFromConvergenceRate);
 
                     assert(dtEstimate > 0);
                     // limit the growth of the timestep size by the growth factor
                     dtEstimate = std::min(dtEstimate, double(maxGrowth_ * dt));
                     assert(dtEstimate > 0);
                     // further restrict time step size growth after convergence problems
-                    if (restarts > 0) {
+                    /*if (restarts > 0) {
                         dtEstimate = std::min(growthFactor_ * dt, dtEstimate);
                         // solver converged, reset restarts counter
                         restarts = 0;
-                    }
+                    }*/
 
                     // Further restrict time step size if we are in
                     // prediction mode with THP constraints.
-                    if (solver.model().wellModel().hasTHPConstraints()) {
+                    /*if (solver.model().wellModel().hasTHPConstraints()) {
                         const double maxPredictionTHPTimestep = 16.0 * unit::day;
                         dtEstimate = std::min(dtEstimate, maxPredictionTHPTimestep);
-                    }
+                    }*/
                     assert(dtEstimate > 0);
                     if (timestepVerbose_) {
                         std::ostringstream ss;
@@ -541,6 +599,58 @@ std::set<std::string> consistentlyFailingWells(const std::vector<StepReport>& sr
                     report.success.converged = substepTimer.done();
                     substepTimer.setLastStepFailed(false);
 
+                }
+                else if (tooLargeTimeStep) {
+                    substepTimer.setLastStepFailed(true);
+
+                    // If we have restarted (i.e. cut the timestep) too
+                    // many times, we have failed and throw an exception.
+                    if (restarts >= solverRestartMax_) {
+                        const auto msg = fmt::format(
+                            "Solver failed to satisfy adaptive time stepping requirement."
+                        );
+                        if (solverVerbose_) {
+                            OpmLog::error(msg);
+                        }
+                        // Use throw directly to prevent file and line
+                        throw TimeSteppingBreakdown{msg};
+                    }
+
+                    // The new, chopped timestep.
+                    const double timeStepSafetyFactor = Parameters::get<TypeTag, Properties::TimeStepSafetyFactor>();
+                    const double newTimeStep = timeStepSafetyFactor * dt * tol / relativeChangeOrResidual.errorPID();
+
+
+                    // If we have restarted (i.e. cut the timestep) too
+                    // much, we have failed and throw an exception.
+                    if (newTimeStep < minTimeStep_) {
+                        const auto msg = fmt::format(
+                            "Solver failed to converge after cutting timestep to {}\n"
+                            "which is the minimum threshold given by option --solver-min-time-step\n",
+                            minTimeStep_
+                        );
+                        if (solverVerbose_) {
+                            OpmLog::error(msg);
+                        }
+                        // Use throw directly to prevent file and line
+                        throw TimeSteppingBreakdown{msg};
+                    }
+
+                    // Define utility function for chopping timestep.
+                    auto chopTimestep = [&]() {
+                        substepTimer.provideTimeStepEstimate(newTimeStep);
+                        if (solverVerbose_) {
+                            const auto msg = fmt::format(
+                                "{}\nTimestep chopped to {} days\n",
+                                causeOfFailure,
+                                std::to_string(unit::convert::to(substepTimer.currentStepLength(), unit::day))
+                            );
+                            OpmLog::problem(msg);
+                        }
+                        ++restarts;
+                    };
+
+                    chopTimestep();
                 }
                 else { // in case of no convergence
                     substepTimer.setLastStepFailed(true);

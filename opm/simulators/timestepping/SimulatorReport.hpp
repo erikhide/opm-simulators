@@ -67,6 +67,7 @@ namespace Opm
         void reportStep(std::ostream& os) const;
         /// Print a report suitable for the end of a fully implicit case, leaving out the pressure/transport time.
         void reportFullyImplicit(std::ostream& os, const SimulatorReportSingle* failedReport = nullptr) const;
+        void revertTime(const double dt);
 
         template<class Serializer>
         void serializeOp(Serializer& serializer)

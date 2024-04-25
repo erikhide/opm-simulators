@@ -178,13 +178,13 @@ namespace Opm
         }
 
         // store new error
-        const double error = relChange.relativeChange();
+        const double error = relChange.errorPID();
         errors_[ 2 ] = error;
         for( int i=0; i<2; ++i ) {
             assert(std::isfinite(errors_[i]));
         }
 
-        if( errors_[2] > tol_ )
+        /*if( errors_[2] > tol_ )
         {
             // adjust dt by given tolerance
             const double newDt = dt * tol_ / error;
@@ -192,7 +192,7 @@ namespace Opm
                     OpmLog::info(fmt::format("Computed step size (tol): {} days", unit::convert::to( newDt, unit::day )));
             return newDt;
         }
-        else if (errors_[0] == 0 || errors_[1] == 0 || errors_[2] == 0.)
+        else*/ if (errors_[0] == 0 || errors_[1] == 0 || errors_[2] == 0.)
         {
             if ( verbose_ )
                 OpmLog::info("The solution between time steps does not change, there is no time step constraint from the PID time step control ");

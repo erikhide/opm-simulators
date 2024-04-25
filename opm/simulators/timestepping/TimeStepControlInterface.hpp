@@ -35,6 +35,8 @@ namespace Opm
     public:
         /// \return || u^n+1 - u^n || / || u^n+1 ||
         virtual double relativeChange() const = 0;
+        virtual double residualInfo() const = 0;
+        virtual double errorPID() const = 0;
 
         /// virtual destructor (empty)
         virtual ~RelativeChangeInterface() {}

@@ -24,12 +24,41 @@
 #include <opm/simulators/timestepping/SimulatorReport.hpp>
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/simulators/timestepping/SimulatorTimerInterface.hpp>
+#include <opm/simulators/timestepping/AdaptiveTimeStepping.hpp>
 
 #include <opm/models/utils/parametersystem.hh>
 #include <opm/models/utils/propertysystem.hh>
 #include <opm/models/utils/basicproperties.hh>
 #include <opm/models/nonlinear/newtonmethodproperties.hh>
 #include <opm/common/Exceptions.hpp>
+
+#include <opm/common/ErrorMacros.hpp>
+#include <opm/common/Exceptions.hpp>
+#include <opm/common/OpmLog/OpmLog.hpp>
+
+#include <opm/core/props/phaseUsageFromDeck.hpp>
+
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
+
+#include <opm/simulators/aquifers/AquiferGridUtils.hpp>
+#include <opm/simulators/aquifers/BlackoilAquiferModel.hpp>
+#include <opm/simulators/flow/BlackoilModelNldd.hpp>
+#include <opm/simulators/flow/BlackoilModelParameters.hpp>
+#include <opm/simulators/flow/countGlobalCells.hpp>
+#include <opm/simulators/flow/FlowProblem.hpp>
+#include <opm/simulators/flow/NonlinearSolver.hpp>
+#include <opm/simulators/flow/RSTConv.hpp>
+#include <opm/simulators/timestepping/AdaptiveTimeStepping.hpp>
+#include <opm/simulators/timestepping/ConvergenceReport.hpp>
+#include <opm/simulators/timestepping/SimulatorReport.hpp>
+#include <opm/simulators/timestepping/SimulatorTimer.hpp>
+#include <opm/simulators/utils/ComponentName.hpp>
+#include <opm/simulators/utils/DeferredLoggingErrorHelpers.hpp>
+#include <opm/simulators/utils/ParallelCommunication.hpp>
+#include <opm/simulators/wells/BlackoilWellModel.hpp>
+
+#include <dune/common/timer.hh>
 
 #include <dune/common/fmatrix.hh>
 #include <dune/istl/bcrsmatrix.hh>
@@ -109,6 +138,7 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
     class NonlinearSolver
     {
         using Scalar = GetPropType<TypeTag, Properties::Scalar>;
+        using Indices = GetPropType<TypeTag, Properties::Indices>;
 
     public:
         // Solver parameters controlling nonlinear process.
@@ -197,7 +227,7 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
         }
 
 
-        SimulatorReportSingle step(const SimulatorTimerInterface& timer)
+        SimulatorReportSingle step(const SimulatorTimerInterface& timer, const int inputForPIDController, const double tol)
         {
             SimulatorReportSingle report;
             report.global_time = timer.simulationTimeElapsed();
@@ -213,6 +243,11 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
             // Set up for main solver loop.
             bool converged = false;
 
+            double currentReduction;
+            double lastReduction;
+            auto pressureNew = model_->simulator().model().solution(/*timeIdx=*/0);
+            convergenceRate_ = 0;
+
             // ----------  Main nonlinear solver loop  ----------
             do {
                 try {
@@ -220,6 +255,25 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
                     // model will usually do an early return without an expensive
                     // solve, unless the minIter() count has not been reached yet.
                     auto iterReport = model_->nonlinearIteration(iteration, timer, *this);
+                    
+                    auto pressureOld = pressureNew;
+                    pressureNew = model_->simulator().model().solution(/*timeIdx=*/0);
+                    lastReduction = currentReduction;
+                    const auto& elemMapper = model_->simulator().model().elementMapper();
+                    const auto& gridView = model_->simulator().gridView();
+                    Scalar tempPressure = 0;
+                    for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
+                        unsigned globalElemIdx = elemMapper.index(elem);
+                        tempPressure += std::pow(pressureNew[globalElemIdx][Indices::pressureSwitchIdx] - pressureOld[globalElemIdx][Indices::pressureSwitchIdx], 2);
+                    }
+                    currentReduction = std::sqrt(tempPressure);
+                    if (iteration > 0) {
+                        convergenceRate_ = std::max(convergenceRate_, currentReduction / lastReduction);
+                        if (gridView.comm().rank() == 0) {
+                            std::cout << "Convergence rate: " + std::to_string(convergenceRate_) << " (" << iteration << ")" << std::endl;
+                        }
+                    }
+
                     iterReport.global_time = timer.simulationTimeElapsed();
                     report += iterReport;
                     report.converged = iterReport.converged;
@@ -242,6 +296,26 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
 
                 std::string msg = "Solver convergence failure - Failed to complete a time step within " + std::to_string(maxIter()) + " iterations.";
                 OPM_THROW_NOLOG(TooManyIterations, msg);
+            }
+            
+            double error;
+            if (inputForPIDController == 1) {
+                error = model_->relativeChange();
+            } else {
+                error = model_->residualInfo();
+            }
+
+            if (model_->simulator().gridView().comm().rank() == 0) {
+                std::cout << "ERROR IS: " << error << std::endl;
+                std::cout << "Newton iterations: " << iteration << std::endl;
+            }
+
+            if (error > tol) {
+                report.converged = false;
+                failureReport_ = report;
+
+                std::string msg = "Time step too large - Failed to satisfy the tolerance test, since the error (" + std::to_string(error) + ") was larger than the tolerance (" + std::to_string(tol) + ").";
+                OPM_THROW_NOLOG(TimeSteppingBreakdown, msg);
             }
 
             // Do model-specific post-step actions.
@@ -339,6 +413,10 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
         void setParameters(const SolverParameters& param)
         { param_ = param; }
 
+        /// Get the estimated rate of convergence for the Newton method
+        double getConvergenceRate() const
+        { return convergenceRate_; }
+
     private:
         // ---------  Data members  ---------
         SimulatorReportSingle failureReport_;
@@ -351,6 +429,7 @@ void stabilizeNonlinearUpdate(BVector& dx, BVector& dxOld,
         int nonlinearIterationsLast_;
         int linearIterationsLast_;
         int wellIterationsLast_;
+        double convergenceRate_;
     };
 
 } // namespace Opm

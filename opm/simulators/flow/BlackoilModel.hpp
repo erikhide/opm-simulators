@@ -526,11 +526,59 @@ namespace Opm {
             return wellModel().lastReport();
         }
 
+        // // Get pressure results for the new solution
+        // std::vector<double> getPressure() const
+        // {
+        //     return simulator_.model().solution(/*timeIdx=*/0);
+        // }
+
+        // // Get saturation results for the new solution
+        // std::vector<double> getSaturation() const
+        // {
+        //     const auto& elemMapper = simulator_.model().elementMapper();
+        //     const auto& gridView = simulator_.gridView();
+        //     for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
+        //         unsigned globalElemIdx = elemMapper.index(elem);
+        //         const auto& priVarsNew = simulator_.model().solution(/*timeIdx=*/0)[globalElemIdx];
+
+        //         Scalar pressureNew;
+        //         pressureNew = priVarsNew[Indices::pressureSwitchIdx];
+
+        //         Scalar saturationsNew[FluidSystem::numPhases] = { 0.0 };
+        //         Scalar oilSaturationNew = 1.0;
+        //         if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx) &&
+        //             FluidSystem::numActivePhases() > 1 &&
+        //             priVarsNew.primaryVarsMeaningWater() == PrimaryVariables::WaterMeaning::Sw) {
+        //             saturationsNew[FluidSystem::waterPhaseIdx] = priVarsNew[Indices::waterSwitchIdx];
+        //             oilSaturationNew -= saturationsNew[FluidSystem::waterPhaseIdx];
+        //         }
+
+        //         if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx) &&
+        //             FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) &&
+        //             priVarsNew.primaryVarsMeaningGas() == PrimaryVariables::GasMeaning::Sg) {
+        //             assert(Indices::compositionSwitchIdx >= 0 );
+        //             saturationsNew[FluidSystem::gasPhaseIdx] = priVarsNew[Indices::compositionSwitchIdx];
+        //             oilSaturationNew -= saturationsNew[FluidSystem::gasPhaseIdx];
+        //         }
+
+        //         if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
+        //             saturationsNew[FluidSystem::oilPhaseIdx] = oilSaturationNew;
+        //         }
+        //     }
+        //     return std::vector<double> 
+        // }
+
         // compute the "relative" change of the solution between time steps
         double relativeChange() const
         {
             Scalar resultDelta = 0.0;
             Scalar resultDenom = 0.0;
+            
+            if (simulator().gridView().comm().rank() == 0) {
+                std::cout << "What happened here?" << std::endl;
+            }
+
+            bool first = true;
 
             const auto& elemMapper = simulator_.model().elementMapper();
             const auto& gridView = simulator_.gridView();
@@ -540,6 +588,10 @@ namespace Opm {
 
                 Scalar pressureNew;
                 pressureNew = priVarsNew[Indices::pressureSwitchIdx];
+
+                if (simulator().gridView().comm().rank() == 0 && first) {
+                    std::cout << "What happened here?" << std::endl;
+                }
 
                 Scalar saturationsNew[FluidSystem::numPhases] = { 0.0 };
                 Scalar oilSaturationNew = 1.0;
@@ -560,6 +612,10 @@ namespace Opm {
 
                 if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
                     saturationsNew[FluidSystem::oilPhaseIdx] = oilSaturationNew;
+                }
+
+                if (simulator().gridView().comm().rank() == 0 && first) {
+                    std::cout << "What happened here?" << std::endl;
                 }
 
                 const auto& priVarsOld = simulator_.model().solution(/*timeIdx=*/1)[globalElemIdx];
@@ -599,6 +655,11 @@ namespace Opm {
                         assert(std::isfinite(resultDenom));
                     }
                 }
+                first = false;
+            }
+
+            if (simulator().gridView().comm().rank() == 0) {
+                std::cout << "What happened here?" << std::endl;
             }
 
             resultDelta = gridView.comm().sum(resultDelta);
@@ -607,6 +668,45 @@ namespace Opm {
             if (resultDenom > 0.0)
                 return resultDelta/resultDenom;
             return 0.0;
+        }
+
+
+        double residualInfo() const
+        {
+            OPM_TIMEBLOCK(residualInfo);
+            const auto& model = simulator_.model();
+            const auto& problem = simulator_.problem();
+            const auto& residual = simulator_.model().linearizer().residual();
+            const auto& gridView = simulator().gridView();
+            ElementContext elemCtx(simulator_);
+            IsNumericalAquiferCell isNumericalAquiferCell(gridView.grid());
+            Scalar residualSummary = 0;
+            Scalar counter = 0;
+
+            OPM_BEGIN_PARALLEL_TRY_CATCH();
+            for (const auto& elem : elements(gridView, Dune::Partitions::interiorBorder))
+            {
+                // Skip cells of numerical Aquifer -- QUESTION: Should we do this here?
+                if (isNumericalAquiferCell(elem))
+                {
+                    continue;
+                }
+                elemCtx.updatePrimaryStencil(elem);
+                const unsigned cell_idx = elemCtx.globalSpaceIndex(/*spaceIdx=*/0, /*timeIdx=*/0);
+                const double pvValue = problem.referencePorosity(cell_idx, /*timeIdx=*/0) * model.dofTotalVolume(cell_idx);
+                const auto& cellResidual = residual[cell_idx];
+
+                for (unsigned eqIdx = 0; eqIdx < cellResidual.size(); ++eqIdx)
+                {
+                    Scalar cellAndVariableResidual = std::abs(cellResidual[eqIdx]);
+                    residualSummary += std::pow(cellAndVariableResidual, 2);
+                }
+                counter++;
+            }
+
+            OPM_END_PARALLEL_TRY_CATCH("BlackoilModel::residualInfo() failed: ", grid_.comm());
+
+            return std::sqrt(grid_.comm().sum(residualSummary)) / grid_.comm().sum(counter);
         }
 
 

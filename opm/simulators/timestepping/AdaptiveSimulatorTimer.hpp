@@ -106,6 +106,8 @@ namespace Opm
         /// \brief tell the timestepper whether timestep failed or not
         void setLastStepFailed(bool lastStepFailed) {lastStepFailed_ = lastStepFailed;}
 
+        void stepBack(const double dt);
+
         /// return copy of object
         virtual std::unique_ptr< SimulatorTimerInterface > clone() const;
 
