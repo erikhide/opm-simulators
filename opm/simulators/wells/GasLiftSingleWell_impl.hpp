@@ -17,6 +17,13 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// Improve IDE experience
+#ifndef OPM_GASLIFT_SINGLE_WELL_HEADER_INCLUDED
+#define OPM_GASLIFT_SINGLE_WELL_IMPL_HEADER_INCLUDED
+#include <config.h>
+#include <opm/simulators/wells/GasLiftSingleWell.hpp>
+#endif
+
 #include <opm/input/eclipse/Schedule/GasLiftOpt.hpp>
 #include <fmt/format.h>
 
@@ -28,8 +35,8 @@ GasLiftSingleWell(const WellInterface<TypeTag> &well,
                   const Simulator& simulator,
                   const SummaryState &summary_state,
                   DeferredLogger &deferred_logger,
-                  WellState &well_state,
-                  const GroupState &group_state,
+                  WellState<Scalar>& well_state,
+                  const GroupState<Scalar>& group_state,
                   GasLiftGroupInfo &group_info,
                   GLiftSyncGroups &sync_groups,
                   const Parallel::Communication& comm,

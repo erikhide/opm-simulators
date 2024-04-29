@@ -19,6 +19,13 @@
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// Improve IDE experience
+#ifndef OPM_STANDARDWELL_HEADER_INCLUDED
+#define OPM_STANDARDWELL_IMPL_HEADER_INCLUDED
+#include <config.h>
+#include <opm/simulators/wells/StandardWell.hpp>
+#endif
+
 #include <opm/common/Exceptions.hpp>
 
 #include <opm/input/eclipse/Units/Units.hpp>
@@ -332,8 +339,8 @@ namespace Opm
                                    const double dt,
                                    const Well::InjectionControls& inj_controls,
                                    const Well::ProductionControls& prod_controls,
-                                   WellState& well_state,
-                                   const GroupState& group_state,
+                                   WellState<Scalar>& well_state,
+                                   const GroupState<Scalar>& group_state,
                                    DeferredLogger& deferred_logger)
     {
         // TODO: only_wells should be put back to save some computation
@@ -358,8 +365,8 @@ namespace Opm
                                        const double dt,
                                        const Well::InjectionControls& inj_controls,
                                        const Well::ProductionControls& prod_controls,
-                                       WellState& well_state,
-                                       const GroupState& group_state,
+                                       WellState<Scalar>& well_state,
+                                       const GroupState<Scalar>& group_state,
                                        DeferredLogger& deferred_logger)
     {
         // try to regularize equation if the well does not converge
@@ -481,7 +488,7 @@ namespace Opm
     StandardWell<TypeTag>::
     calculateSinglePerf(const Simulator& simulator,
                         const int perf,
-                        WellState& well_state,
+                        WellState<Scalar>& well_state,
                         std::vector<RateVector>& connectionRates,
                         std::vector<EvalWell>& cq_s,
                         EvalWell& water_flux_s,
@@ -687,7 +694,7 @@ namespace Opm
     StandardWell<TypeTag>::
     updateWellState(const SummaryState& summary_state,
                     const BVectorWell& dwells,
-                    WellState& well_state,
+                    WellState<Scalar>& well_state,
                     DeferredLogger& deferred_logger)
     {
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;
@@ -730,7 +737,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     updateWellStateFromPrimaryVariables(const bool stop_or_zero_rate_target,
-                                        WellState& well_state,
+                                        WellState<Scalar>& well_state,
                                         const SummaryState& summary_state,
                                         DeferredLogger& deferred_logger) const
     {
@@ -840,7 +847,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     updateIPRImplicit(const Simulator& simulator,
-                      WellState& well_state, 
+                      WellState<Scalar>& well_state,
                       DeferredLogger& deferred_logger)
     {   
         // Compute IPR based on *converged* well-equation:
@@ -915,7 +922,7 @@ namespace Opm
     template<typename TypeTag>
     void
     StandardWell<TypeTag>::
-    checkOperabilityUnderBHPLimit(const WellState& well_state,
+    checkOperabilityUnderBHPLimit(const WellState<Scalar>& well_state,
                                   const Simulator& simulator,
                                   DeferredLogger& deferred_logger)
     {
@@ -985,7 +992,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     checkOperabilityUnderTHPLimit(const Simulator& simulator,
-                                  const WellState& well_state,
+                                  const WellState<Scalar>& well_state,
                                   DeferredLogger& deferred_logger)
     {
         const auto& summaryState = simulator.vanguard().summaryState();
@@ -1076,7 +1083,7 @@ namespace Opm
     bool
     StandardWell<TypeTag>::
     canProduceInjectWithCurrentBhp(const Simulator& simulator,
-                                   const WellState& well_state,
+                                   const WellState<Scalar>& well_state,
                                    DeferredLogger& deferred_logger)
     {
         const double bhp = well_state.well(this->index_of_well_).bhp;
@@ -1123,7 +1130,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     computePropertiesForWellConnectionPressures(const Simulator& simulator,
-                                                const WellState& well_state,
+                                                const WellState<Scalar>& well_state,
                                                 WellConnectionProps& props) const
     {
         std::function<Scalar(int,int)> getTemperature =
@@ -1169,7 +1176,7 @@ namespace Opm
     ConvergenceReport
     StandardWell<TypeTag>::
     getWellConvergence(const SummaryState& summary_state,
-                       const WellState& well_state,
+                       const WellState<Scalar>& well_state,
                        const std::vector<double>& B_avg,
                        DeferredLogger& deferred_logger,
                        const bool relax_tolerance) const
@@ -1214,7 +1221,7 @@ namespace Opm
     StandardWell<TypeTag>::
     updateProductivityIndex(const Simulator& simulator,
                             const WellProdIndexCalculator& wellPICalc,
-                            WellState& well_state,
+                            WellState<Scalar>& well_state,
                             DeferredLogger& deferred_logger) const
     {
         auto fluidState = [&simulator, this](const int perf)
@@ -1289,7 +1296,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     computeWellConnectionDensitesPressures(const Simulator& simulator,
-                                           const WellState& well_state,
+                                           const WellState<Scalar>& well_state,
                                            const WellConnectionProps& props,
                                            DeferredLogger& deferred_logger)
     {
@@ -1331,7 +1338,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     computeWellConnectionPressures(const Simulator& simulator,
-                                   const WellState& well_state,
+                                   const WellState<Scalar>& well_state,
                                    DeferredLogger& deferred_logger)
     {
          // 1. Compute properties required by computePressureDelta().
@@ -1351,7 +1358,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     solveEqAndUpdateWellState(const SummaryState& summary_state,
-                              WellState& well_state,
+                              WellState<Scalar>& well_state,
                               DeferredLogger& deferred_logger)
     {
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;
@@ -1373,7 +1380,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     calculateExplicitQuantities(const Simulator& simulator,
-                                const WellState& well_state,
+                                const WellState<Scalar>& well_state,
                                 DeferredLogger& deferred_logger)
     {
         const auto& summary_state = simulator.vanguard().summaryState();
@@ -1422,7 +1429,7 @@ namespace Opm
     StandardWell<TypeTag>::
     recoverWellSolutionAndUpdateWellState(const SummaryState& summary_state,
                                           const BVector& x,
-                                          WellState& well_state,
+                                          WellState<Scalar>& well_state,
                                           DeferredLogger& deferred_logger)
     {
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;
@@ -1498,7 +1505,7 @@ namespace Opm
         // iterate to get a more accurate well density
         // create a copy of the well_state to use. If the operability checking is sucessful, we use this one
         // to replace the original one
-        WellState well_state_copy = simulator.problem().wellModel().wellState();
+        WellState<Scalar> well_state_copy = simulator.problem().wellModel().wellState();
         const auto& group_state  = simulator.problem().wellModel().groupState();
 
         // Get the current controls.
@@ -1553,7 +1560,7 @@ namespace Opm
     StandardWell<TypeTag>::
     computeWellPotentialWithTHP(const Simulator& simulator,
                                DeferredLogger& deferred_logger,
-                               const WellState &well_state) const
+                               const WellState<Scalar>& well_state) const
     {
         std::vector<double> potentials(this->number_of_phases_, 0.0);
         const auto& summary_state = simulator.vanguard().summaryState();
@@ -1595,7 +1602,7 @@ namespace Opm
         StandardWell<TypeTag> well_copy(*this);
 
         // store a copy of the well state, we don't want to update the real well state
-        WellState well_state_copy = simulator.problem().wellModel().wellState();
+        WellState<Scalar> well_state_copy = simulator.problem().wellModel().wellState();
         const auto& group_state = simulator.problem().wellModel().groupState();
         auto& ws = well_state_copy.well(this->index_of_well_);
 
@@ -1694,7 +1701,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     computeWellPotentials(const Simulator& simulator,
-                          const WellState& well_state,
+                          const WellState<Scalar>& well_state,
                           std::vector<double>& well_potentials,
                           DeferredLogger& deferred_logger) // const
     {
@@ -1766,7 +1773,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     updatePrimaryVariables(const SummaryState& summary_state,
-                           const WellState& well_state,
+                           const WellState<Scalar>& well_state,
                            DeferredLogger& deferred_logger)
     {
         if (!this->isOperableAndSolvable() && !this->wellIsStopped()) return;
@@ -1875,7 +1882,7 @@ namespace Opm
                                                     const BVector& weights,
                                                     const int pressureVarIndex,
                                                     const bool use_well_weights,
-                                                    const WellState& well_state) const
+                                                    const WellState<Scalar>& well_state) const
     {
         this->linSys_.extractCPRPressureMatrix(jacobian,
                                                weights,
@@ -1997,7 +2004,7 @@ namespace Opm
     template<typename TypeTag>
     void
     StandardWell<TypeTag>::
-    updateWaterThroughput(const double dt, WellState &well_state) const
+    updateWaterThroughput(const double dt, WellState<Scalar>& well_state) const
     {
         if constexpr (Base::has_polymermw) {
             if (this->isInjector()) {
@@ -2045,7 +2052,7 @@ namespace Opm
     void
     StandardWell<TypeTag>::
     handleInjectivityEquations(const Simulator& simulator,
-                               const WellState& well_state,
+                               const WellState<Scalar>& well_state,
                                const int perf,
                                const EvalWell& water_flux_s,
                                DeferredLogger& deferred_logger)
@@ -2113,7 +2120,7 @@ namespace Opm
     StandardWell<TypeTag>::
     updateConnectionRatePolyMW(const EvalWell& cq_s_poly,
                                const IntensiveQuantities& int_quants,
-                               const WellState& well_state,
+                               const WellState<Scalar>& well_state,
                                const int perf,
                                std::vector<RateVector>& connectionRates,
                                DeferredLogger& deferred_logger) const
@@ -2154,7 +2161,7 @@ namespace Opm
     template<typename TypeTag>
     std::optional<double>
     StandardWell<TypeTag>::
-    computeBhpAtThpLimitProd(const WellState& well_state,
+    computeBhpAtThpLimitProd(const WellState<Scalar>& well_state,
                              const Simulator& simulator,
                              const SummaryState& summary_state,
                              DeferredLogger& deferred_logger) const
@@ -2282,8 +2289,8 @@ namespace Opm
                              const double dt,
                              const Well::InjectionControls& inj_controls,
                              const Well::ProductionControls& prod_controls,
-                             WellState& well_state,
-                             const GroupState& group_state,
+                             WellState<Scalar>& well_state,
+                             const GroupState<Scalar>& group_state,
                              DeferredLogger& deferred_logger)
     {
         const int max_iter = this->param_.max_inner_iter_wells_;
@@ -2329,15 +2336,15 @@ namespace Opm
                                const double dt,
                                const Well::InjectionControls& inj_controls,
                                const Well::ProductionControls& prod_controls,
-                               WellState& well_state,
-                               const GroupState& group_state,
+                               WellState<Scalar>& well_state,
+                               const GroupState<Scalar>& group_state,
                                DeferredLogger& deferred_logger, 
                                const bool fixed_control /*false*/, 
                                const bool fixed_status /*false*/)
     {
         const int max_iter = this->param_.max_inner_iter_wells_;
         int it = 0;
-        bool converged;
+        bool converged = false;
         bool relax_convergence = false;
         this->regularize_ = false;
         const auto& summary_state = simulator.vanguard().summaryState();
