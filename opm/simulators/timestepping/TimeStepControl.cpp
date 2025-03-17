@@ -292,10 +292,14 @@ namespace Opm
     General3rdOrderController::General3rdOrderController( const double tolerance,
                                                           const double safetyFactor,
                                                           const bool rejectCompletedStep,
+                                                          const std::string toleranceTestVersion,
+                                                          const double maxReductionTimeStep,
                                                           const bool verbose)
         : tolerance_( tolerance )
         , safetyFactor_( safetyFactor )
         , rejectCompletedStep_( rejectCompletedStep )
+        , toleranceTestVersion_( toleranceTestVersion )
+        , maxReductionTimeStep_( maxReductionTimeStep )
         , errors_( 3, tolerance_ )
         , timeSteps_ ( 3, 1.0 )
         , verbose_( verbose )
@@ -313,22 +317,6 @@ namespace Opm
     double General3rdOrderController::
     computeTimeStepSize(const double dt, const int /*iterations */, const RelativeChangeInterface& relChange, const AdaptiveSimulatorTimer& substepTimer) const
     {
-        // Shift errors and time steps
-        for( int i = 0; i < 2; ++i )
-        {
-            errors_[i] = errors_[i+1];
-            timeSteps_[i] = timeSteps_[i+1];
-        }
-
-        // Store new error and time step
-        const double error = relChange.relativeChange();
-        errors_[2] = error;
-        timeSteps_[2] = dt;
-        for( int i = 0; i < 2; ++i )
-        {
-            assert(std::isfinite(errors_[i]));
-        }
-
         if (errors_[0] == 0 || errors_[1] == 0 || errors_[2] == 0.)
         {
             if ( verbose_ )
@@ -338,11 +326,12 @@ namespace Opm
         // Use an I controller after report time steps or chopped time steps
         else if (substepTimer.currentStepNum() < 3 || substepTimer.lastStepFailed() || counterSinceFailure_ > 0)
         {
+            controllerVersion_ = "I-controller";
             if (substepTimer.lastStepFailed() || counterSinceFailure_ > 0)
                 counterSinceFailure_++;
             if (counterSinceFailure_ > 1)
                 counterSinceFailure_ = 0;
-            const double newDt = dt * std::pow(safetyFactor_ * tolerance_ / errors_[2], 0.35);
+            const double newDt = dt * timeStepFactor(errors_, timeSteps_);
             if( verbose_ )
                 OpmLog::info(fmt::format("Computed step size (pow): {} days", unit::convert::to( newDt, unit::day )));
             return newDt;
@@ -350,24 +339,70 @@ namespace Opm
         // Use the general third order controller for all other time steps
         else
         {
-            const std::array<double, 3> beta = { 0.125, 0.25, 0.125 };
-            const std::array<double, 2> alpha = { 0.375, 0.125 };
-            const double newDt = dt * std::pow(safetyFactor_ * tolerance_ / errors_[2], beta[0]) *
-                                      std::pow(safetyFactor_ * tolerance_ / errors_[1], beta[1]) *
-                                      std::pow(safetyFactor_ * tolerance_ / errors_[0], beta[2]) *
-                                      std::pow(timeSteps_[2] / timeSteps_[1], -alpha[0]) *
-                                      std::pow(timeSteps_[1] / timeSteps_[0], -alpha[1]);
+            controllerVersion_ = "3rdOrder";
+            const double newDt = dt * timeStepFactor(errors_, timeSteps_);
             if( verbose_ )
                 OpmLog::info(fmt::format("Computed step size (pow): {} days", unit::convert::to( newDt, unit::day )));
             return newDt;
         }
     }
 
-    bool General3rdOrderController::
-    timeStepAccepted(const double error) const
+    double General3rdOrderController::
+    timeStepFactor(const std::vector<double> errors, const std::vector<double> timeSteps) const
     {
-        if (rejectCompletedStep_ && error > tolerance_)
+        if (controllerVersion_ == "3rdOrder")
+        {
+            return std::pow(safetyFactor_ * tolerance_ / errors[2], beta_[0]) *
+                   std::pow(safetyFactor_ * tolerance_ / errors[1], beta_[1]) *
+                   std::pow(safetyFactor_ * tolerance_ / errors[0], beta_[2]) *
+                   std::pow(timeSteps[2] / timeSteps[1], -alpha_[0]) *
+                   std::pow(timeSteps[1] / timeSteps[0], -alpha_[1]);
+        }
+        else if (controllerVersion_ == "I-controller")
+        {
+            return std::pow(safetyFactor_ * tolerance_ / errors[2], 0.35);
+        }
+    }
+
+    bool General3rdOrderController::
+    timeStepAccepted(const double error, const double timeStep) const
+    {
+        // Shift errors and time steps
+        for( int i = 0; i < 2; ++i )
+        {
+            errors_[i] = errors_[i+1];
+            timeSteps_[i] = timeSteps_[i+1];
+        }
+
+        // Store new error and time step
+        errors_[2] = error;
+        timeSteps_[2] = timeStep;
+
+        for( int i = 0; i < 2; ++i ) { assert(std::isfinite(errors_[i])); }
+
+        if (chop_) {
+            chop_ = false;
             return false;
+        }
+        else {
+            chop_ = true;
+            return true;
+        }
+
+        // Return false if chosen tolerance test version fails
+        if (toleranceTestVersion_ == "just-tolerance")
+        {
+            if (rejectCompletedStep_ && error > tolerance_) { return false; }
+        }
+        else if (toleranceTestVersion_ == "control-error-filtering")
+        {
+            double stepFactor = timeStepFactor(errors_, timeSteps_);
+            if (rejectCompletedStep_ && stepFactor < maxReductionTimeStep_) { return false; }
+        }
+        else
+        {
+            OPM_THROW(std::runtime_error, "Unsupported tolerance test version: " + toleranceTestVersion_);
+        }
         return true;
     }
 
@@ -376,8 +411,12 @@ namespace Opm
         return this->tolerance_ == ctrl.tolerance_ &&
                this->safetyFactor_ == ctrl.safetyFactor_ &&
                this->rejectCompletedStep_ == ctrl.rejectCompletedStep_ &&
+               this->toleranceTestVersion_ == ctrl.toleranceTestVersion_ &&
+               this->maxReductionTimeStep_ == ctrl.maxReductionTimeStep_ &&
                this->errors_ == ctrl.errors_ &&
                this->timeSteps_ == ctrl.timeSteps_ &&
+               this->beta_ == ctrl.beta_ &&
+               this->alpha_ == ctrl.alpha_ &&
                this->verbose_ == ctrl.verbose_;
     }
 

@@ -175,8 +175,9 @@ struct NonlinearSolverParameters
                 std::string msg = "Solver convergence failure - Failed to complete a time step within " + std::to_string(maxIter()) + " iterations.";
                 OPM_THROW_NOLOG(TooManyIterations, msg);
             }
-            if (!timeStepControl.timeStepAccepted(model_->relativeChange())) {
+            if (!timeStepControl.timeStepAccepted(model_->relativeChange(), timer.currentStepLength())) {
                 report.converged = false;
+                report.time_step_rejected = true;
                 failureReport_ = report;
 
                 std::string msg = "Time step was too large. Tolerance test failed.";

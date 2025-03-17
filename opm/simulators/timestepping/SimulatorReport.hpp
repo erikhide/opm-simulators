@@ -52,6 +52,7 @@ namespace Opm
         unsigned int max_linear_iterations = 0;
 
         bool converged = false;
+        bool time_step_rejected = false;
         bool well_group_control_changed = false;
         int exit_status = EXIT_SUCCESS;
 
@@ -89,6 +90,7 @@ namespace Opm
             serializer(min_linear_iterations);
             serializer(max_linear_iterations);
             serializer(converged);
+            serializer(time_step_rejected);
             serializer(well_group_control_changed);
             serializer(exit_status);
             serializer(global_time);

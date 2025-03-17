@@ -788,9 +788,16 @@ run()
         problem.setSubStepReport(substep_report);
 
         report += substep_report;
-
+        
         if (substep_report.converged || checkContinueOnUnconvergedSolution_(dt)) {
             ++this->substep_timer_;   // advance by current dt
+
+            double temp_relative_change = solver_().model().relativeChange();
+            if (solver_().model().simulator().gridView().comm().rank() == 0)
+            {
+                std::cout << "RC: " << temp_relative_change << std::endl;
+                std::cout << "T: " << dt << std::endl;
+            }
 
             const int iterations = getNumIterations_(substep_report);
             auto dt_estimate = timeStepControlComputeEstimate_(
@@ -818,11 +825,17 @@ run()
         else { // in case of no convergence or time step tolerance test failure
             this->substep_timer_.setLastStepFailed(true);
             checkTimeStepMaxRestartLimit_(restarts);
+            
+            double new_time_step = restartFactor_() * dt;
+            if (substep_report.time_step_rejected) {
+                const double tol =  Parameters::Get<Parameters::TimeStepControlTolerance>();
+                const double safetyFactor = Parameters::Get<Parameters::TimeStepControlSafetyFactor>();
+                new_time_step = std::sqrt(safetyFactor * tol / solver_().model().relativeChange()) * dt;
+            }
 
-            const double new_time_step = restartFactor_() * dt;
             checkTimeStepMinLimit_(new_time_step);
             bool wells_shut = false;
-            if (new_time_step > minTimeStepBeforeClosingWells_()) {
+            if (substep_report.time_step_rejected || new_time_step > minTimeStepBeforeClosingWells_()) {
                 chopTimeStep_(new_time_step);
             } else {
                 wells_shut = chopTimeStepOrCloseFailingWells_(new_time_step);
