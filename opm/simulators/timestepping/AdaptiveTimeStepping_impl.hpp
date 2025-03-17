@@ -844,6 +844,7 @@ run()
             if (substep_report.time_step_rejected) {
                 const double tol =  Parameters::Get<Parameters::TimeStepControlTolerance>();
                 const double safetyFactor = Parameters::Get<Parameters::TimeStepControlSafetyFactor>();
+                //new_time_step = dt;
                 new_time_step = std::sqrt(safetyFactor * tol / solver_().model().relativeChange()) * dt;
             }
 

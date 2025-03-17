@@ -367,43 +367,47 @@ namespace Opm
     bool General3rdOrderController::
     timeStepAccepted(const double error, const double timeStep) const
     {
-        // Shift errors and time steps
-        for( int i = 0; i < 2; ++i )
-        {
-            errors_[i] = errors_[i+1];
-            timeSteps_[i] = timeSteps_[i+1];
-        }
+        bool acceptTimeStep = true;
 
-        // Store new error and time step
-        errors_[2] = error;
-        timeSteps_[2] = timeStep;
-
-        for( int i = 0; i < 2; ++i ) { assert(std::isfinite(errors_[i])); }
-
-        if (chop_) {
+        /*if (rejectCompletedStep_ && chop_) {
             chop_ = false;
-            return false;
+            acceptTimeStep = false;
         }
         else {
             chop_ = true;
-            return true;
-        }
+        }*/
 
         // Return false if chosen tolerance test version fails
         if (toleranceTestVersion_ == "just-tolerance")
         {
-            if (rejectCompletedStep_ && error > tolerance_) { return false; }
+            if (rejectCompletedStep_ && error > tolerance_) { acceptTimeStep = false; }
         }
         else if (toleranceTestVersion_ == "control-error-filtering")
         {
             double stepFactor = timeStepFactor(errors_, timeSteps_);
-            if (rejectCompletedStep_ && stepFactor < maxReductionTimeStep_) { return false; }
+            if (rejectCompletedStep_ && stepFactor < maxReductionTimeStep_) { acceptTimeStep = false; }
         }
         else
         {
             OPM_THROW(std::runtime_error, "Unsupported tolerance test version: " + toleranceTestVersion_);
         }
-        return true;
+
+        // Shift errors and time steps
+        if (acceptTimeStep) {
+            for( int i = 0; i < 2; ++i )
+            {
+                errors_[i] = errors_[i+1];
+                timeSteps_[i] = timeSteps_[i+1];
+            }
+    
+            // Store new error and time step
+            errors_[2] = error;
+            timeSteps_[2] = timeStep;
+    
+            for( int i = 0; i < 2; ++i ) { assert(std::isfinite(errors_[i])); }    
+        }
+
+        return acceptTimeStep;
     }
 
     bool General3rdOrderController::operator==(const General3rdOrderController& ctrl) const
