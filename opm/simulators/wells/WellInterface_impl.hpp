@@ -76,7 +76,7 @@ namespace Opm
                                                   index_of_well,
                                                   perf_data)
     {
-        connectionRates_.resize(this->number_of_perforations_);
+        connectionRates_.resize(this->number_of_local_perforations_);
 
         if constexpr (has_solvent || has_zFraction) {
             if (well.isInjector()) {
@@ -915,11 +915,11 @@ namespace Opm
         const bool well_operable = this->operability_status_.isOperableAndSolvable();
 
         if (!well_operable && old_well_operable) {
-            deferred_logger.info(" well " + this->name() + " gets STOPPED during iteration ");
+            deferred_logger.debug(" well " + this->name() + " gets STOPPED during iteration ");
             this->stopWell();
             changed_to_stopped_this_step_ = true;
         } else if (well_operable && !old_well_operable) {
-            deferred_logger.info(" well " + this->name() + " gets REVIVED during iteration ");
+            deferred_logger.debug(" well " + this->name() + " gets REVIVED during iteration ");
             this->openWell();
             changed_to_stopped_this_step_ = false;
             this->changed_to_open_this_step_ = true;
@@ -933,7 +933,7 @@ namespace Opm
         if(!this->isOperableAndSolvable() && !this->wellIsStopped())
             return;
 
-        for (int perfIdx = 0; perfIdx < this->number_of_perforations_; ++perfIdx) {
+        for (int perfIdx = 0; perfIdx < this->number_of_local_perforations_; ++perfIdx) {
             if (this->cells()[perfIdx] == cellIdx) {
                 for (int i = 0; i < RateVector::dimension; ++i) {
                     rates[i] += connectionRates_[perfIdx][i];
@@ -946,7 +946,7 @@ namespace Opm
     typename WellInterface<TypeTag>::Scalar
     WellInterface<TypeTag>::volumetricSurfaceRateForConnection(int cellIdx, int phaseIdx) const
     {
-        for (int perfIdx = 0; perfIdx < this->number_of_perforations_; ++perfIdx) {
+        for (int perfIdx = 0; perfIdx < this->number_of_local_perforations_; ++perfIdx) {
             if (this->cells()[perfIdx] == cellIdx) {
                 const unsigned activeCompIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::solventComponentIndex(phaseIdx));
                 return connectionRates_[perfIdx][activeCompIdx].value();
@@ -1500,9 +1500,11 @@ namespace Opm
                     for (int p = 0; p<np; ++p) {
                         ws.surface_rates[p] *= scale;
                     }
-                    ws.trivial_target = false;
+                    ws.trivial_group_target = false;
                 } else {
-                    ws.trivial_target = true;
+                    // If group target is trivial we dont want to flip to other controls. To avoid oscillation we store
+                    // this information in the well state and explicitly check for this condition when evaluating well controls.
+                    ws.trivial_group_target = true;
                 }
                 break;
             }
@@ -1594,10 +1596,12 @@ namespace Opm
         // if we don't have any potentials we weight it using the mobilites
         // We only need approximation so we don't bother with the vapporized oil and dissolved gas
         Scalar total_tw = 0;
-        const int nperf = this->number_of_perforations_;
+        const int nperf = this->number_of_local_perforations_;
         for (int perf = 0; perf < nperf; ++perf) {
             total_tw += this->well_index_[perf];
         }
+        total_tw = this->parallelWellInfo().communication().sum(total_tw);
+
         for (int perf = 0; perf < nperf; ++perf) {
             const int cell_idx = this->well_cells_[perf];
             const auto& intQuants = simulator.model().intensiveQuantities(cell_idx, /*timeIdx=*/0);
@@ -1761,7 +1765,7 @@ namespace Opm
 
         auto& d_factor = ws.perf_data.connection_d_factor;
 
-        for (int perf = 0; perf < this->number_of_perforations_; ++perf) {
+        for (int perf = 0; perf < this->number_of_local_perforations_; ++perf) {
             const int cell_idx = this->well_cells_[perf];
             const auto& intQuants = simulator.model().intensiveQuantities(cell_idx, /*timeIdx=*/ 0);
 
@@ -1827,7 +1831,7 @@ namespace Opm
         auto& tmult = ws.perf_data.connection_compaction_tmult;
         auto& ctf   = ws.perf_data.connection_transmissibility_factor;
 
-        for (int perf = 0; perf < this->number_of_perforations_; ++perf) {
+        for (int perf = 0; perf < this->number_of_local_perforations_; ++perf) {
             const int cell_idx = this->well_cells_[perf];
 
             const auto& intQuants = simulator.model()

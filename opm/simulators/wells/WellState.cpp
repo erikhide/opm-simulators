@@ -31,8 +31,10 @@
 
 #include <opm/output/data/Wells.hpp>
 
+#include <opm/simulators/wells/ConnFracStatistics.hpp>
 #include <opm/simulators/wells/ParallelWellInfo.hpp>
 #include <opm/simulators/wells/PerforationData.hpp>
+#include <opm/simulators/wells/RunningStatistics.hpp>
 
 #include <opm/simulators/utils/ParallelCommunication.hpp>
 
@@ -246,6 +248,7 @@ void WellState<Scalar>::initSingleWell(const std::vector<Scalar>& cellPressures,
     if (!well_perf_data.empty()) {
         pressure_first_connection = cellPressures[well_perf_data[0].cell_index];
     }
+    // The following call is necessary to ensure that processes that do not contain the first perforation get the correct value
     pressure_first_connection = well_info.broadcastFirstPerforationValue(pressure_first_connection);
 
     if (well.isInjector()) {
@@ -253,6 +256,7 @@ void WellState<Scalar>::initSingleWell(const std::vector<Scalar>& cellPressures,
         if (!well_perf_data.empty()) {
             temperature_first_connection = cellTemperatures[well_perf_data[0].cell_index];
         }
+        // The following call is necessary to ensure that processes that do not contain the first perforation get the correct value
         temperature_first_connection = well_info.broadcastFirstPerforationValue(temperature_first_connection);
         this->initSingleInjector(well, well_info, pressure_first_connection, temperature_first_connection,
                                  well_perf_data, summary_state);
@@ -639,6 +643,11 @@ void WellState<Scalar>::reportConnections(std::vector<data::Connection>& connect
     if (! ws.producer) {
         this->reportConnectionFilterCake(well_index, connections);
     }
+
+    if (! perf_data.connFracStatistics.empty()) {
+        this->reportFractureStatistics(perf_data.connFracStatistics,
+                                       connections);
+    }
 }
 
 template<class Scalar>
@@ -743,16 +752,12 @@ void WellState<Scalar>::initWellStateMSWell(const std::vector<Well>& wells_ecl,
                         const int first_perf = ws.parallel_info.get().globalToLocal(segment_perforations[seg][0]);
                         if (first_perf > -1) { //-1 indicates that the global id is not on this process
                             segment_pressure[seg] = perf_press[first_perf];
+                        } else {
+                            segment_pressure[seg] = 0.0; // setting this to 0 here, this will later be filled by the communication below
                         }
                         segment_indices.push_back(seg);
-                    } else {
-                        // seg_press_.push_back(bhp); // may not be a good decision
-                        // using the outlet segment pressure // it needs the ordering is correct
-                        const int outlet_seg = segment_set[seg].outletSegment();
-                        segment_pressure[seg] = segment_pressure[segment_set.segmentNumberToIndex(outlet_seg)];
                     }
                 }
-
                 if (ws.parallel_info.get().communication().size() > 1) {
                     // Communicate the segment_pressure values
                     std::vector<Scalar> values_to_combine(segment_indices.size(), 0.0);
@@ -765,6 +770,16 @@ void WellState<Scalar>::initWellStateMSWell(const std::vector<Well>& wells_ecl,
                     // Now make segment_pressure equal across all processes
                     for (size_t i = 0; i < segment_indices.size(); ++i) {
                         segment_pressure[segment_indices[i]] = values_to_combine[i];
+                    }
+                }
+                // Before addressing the segments with !segment_perforations[seg].empty(), we need to communicate such that the
+                // vector segment_pressure contains info from all processes
+                for (int seg = 1; seg < well_nseg; ++ seg) {
+                    if (segment_perforations[seg].empty()) {
+                        // seg_press_.push_back(bhp); // may not be a good decision
+                        // using the outlet segment pressure // it needs the ordering is correct
+                        const int outlet_seg = segment_set[seg].outletSegment();
+                        segment_pressure[seg] = segment_pressure[segment_set.segmentNumberToIndex(outlet_seg)];
                     }
                 }
             }
@@ -1131,6 +1146,43 @@ reportConnectionFilterCake(const std::size_t well_index,
         filtrate.perm = filtrate_data.perm[i];
         filtrate.radius = filtrate_data.radius[i];
         filtrate.area_of_flow = filtrate_data.area_of_flow[i];
+    }
+}
+
+template <class Scalar>
+void WellState<Scalar>::
+reportFractureStatistics(const std::vector<ConnFracStatistics<Scalar>>& stats,
+                         std::vector<data::Connection>& connections) const
+{
+    using Quantity = typename ConnFracStatistics<Scalar>::Quantity;
+    using StatResult = data::ConnectionFracturing;
+
+    auto connIx = 0*connections.size();
+    for (auto& connection : connections) {
+        for (const auto& [q, result] : {
+                std::pair { Quantity::Pressure, &StatResult::press },
+                std::pair { Quantity::FlowRate, &StatResult::rate  },
+                std::pair { Quantity::Width   , &StatResult::width },
+            })
+        {
+            const auto& stat = stats[connIx].statistics(q);
+
+            if (stat.sampleSize() > 0) {
+                auto& x = connection.fract.*result;
+
+                x.avg = stat.mean();
+                x.min = stat.min();
+                x.max = stat.max();
+
+                if (const auto stdev = stat.stdev(); stdev.has_value()) {
+                    x.stdev = *stdev;
+                }
+
+                connection.fract.numCells = stat.sampleSize();
+            }
+        }
+
+        ++connIx;
     }
 }
 

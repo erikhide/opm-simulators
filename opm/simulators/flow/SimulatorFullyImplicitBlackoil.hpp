@@ -104,12 +104,13 @@ public:
     using SolutionVector = GetPropType<TypeTag, Properties::SolutionVector>;
     using MaterialLawParams = GetPropType<TypeTag, Properties::MaterialLawParams>;
     using AquiferModel = GetPropType<TypeTag, Properties::AquiferModel>;
+    using Model = GetPropType<TypeTag, Properties::NonlinearSystem>;
 
     using TimeStepper = AdaptiveTimeStepping<TypeTag>;
     using PolymerModule = BlackOilPolymerModule<TypeTag>;
     using MICPModule = BlackOilMICPModule<TypeTag>;
 
-    using Model = BlackoilModel<TypeTag>;
+
     using Solver = NonlinearSolver<TypeTag, Model>;
     using ModelParameters = typename Model::ModelParameters;
     using SolverParameters = typename Solver::SolverParameters;
@@ -289,10 +290,10 @@ public:
             if (enableTUNING) {
                 adaptiveTimeStepping_ = std::make_unique<TimeStepper>(max_next_tstep,
                                                                       sched_state.tuning(),
-                                                                      unitSystem, terminalOutput_);
+                                                                      unitSystem, report_, terminalOutput_);
             }
             else {
-                adaptiveTimeStepping_ = std::make_unique<TimeStepper>(unitSystem, max_next_tstep, terminalOutput_);
+                adaptiveTimeStepping_ = std::make_unique<TimeStepper>(unitSystem, report_, max_next_tstep, terminalOutput_);
             }
 #ifdef RESERVOIR_COUPLING_ENABLED
             if (this->reservoirCouplingSlave_) {
@@ -424,7 +425,9 @@ public:
                                         wmatcher,
                                         this->wellModel_().wellOpenTimes(),
                                         this->wellModel_().wellCloseTimes(),
-                                        [timeStep, &wg_events = schedule[reportStep].wellgroup_events()](const std::string& name)
+                                        [timeStep,
+                                         &wg_events = this->wellModel_().reportStepStartEvents()]
+                                        (const std::string& name)
                                         {
                                             if (timeStep != 0) {
                                                 return false;
