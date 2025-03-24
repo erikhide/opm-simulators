@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <fstream>
+#include <sstream>
 #include <iostream>
 #include <limits>
 
@@ -294,6 +295,7 @@ namespace Opm
                                                           const bool rejectCompletedStep,
                                                           const std::string toleranceTestVersion,
                                                           const double maxReductionTimeStep,
+                                                          const std::string parameters,
                                                           const bool verbose)
         : tolerance_( tolerance )
         , safetyFactor_( safetyFactor )
@@ -303,7 +305,22 @@ namespace Opm
         , errors_( 3, tolerance_ )
         , timeSteps_ ( 3, 1.0 )
         , verbose_( verbose )
-    {}
+    {
+        if (parameters != "") {
+            int counter = 0;
+            std::istringstream parameters_stream(parameters);
+            std::string value;
+            while (std::getline(parameters_stream, value, ';')) {
+                if (counter < 3) {
+                    beta_[counter] = std::stod(value);
+                }
+                else {
+                    alpha_[counter - 3] = std::stod(value);
+                }
+                counter++;
+            }
+        }
+    }
 
     General3rdOrderController
     General3rdOrderController::serializationTestObject()
@@ -315,8 +332,10 @@ namespace Opm
     }
 
     double General3rdOrderController::
-    computeTimeStepSize(const double dt, const int /*iterations */, const RelativeChangeInterface& relChange, const AdaptiveSimulatorTimer& substepTimer) const
+    computeTimeStepSize(const double dt, const int /* iterations */, const RelativeChangeInterface& /* relChange */, const AdaptiveSimulatorTimer& substepTimer) const
     {
+        timeStepNumber_++;
+        
         if (errors_[0] == 0 || errors_[1] == 0 || errors_[2] == 0.)
         {
             if ( verbose_ )
@@ -324,13 +343,13 @@ namespace Opm
             return std::numeric_limits<double>::max();
         }
         // Use an I controller after report time steps or chopped time steps
-        else if (substepTimer.currentStepNum() < 3 || substepTimer.lastStepFailed() || counterSinceFailure_ > 0)
+        else if (timeStepNumber_ < 3) //(substepTimer.currentStepNum() < 3 || substepTimer.lastStepFailed() || counterSinceFailure_ > 0)
         {
             controllerVersion_ = "I-controller";
-            if (substepTimer.lastStepFailed() || counterSinceFailure_ > 0)
+            /*if (substepTimer.lastStepFailed() || counterSinceFailure_ > 0)
                 counterSinceFailure_++;
             if (counterSinceFailure_ > 1)
-                counterSinceFailure_ = 0;
+                counterSinceFailure_ = 0;*/
             const double newDt = dt * timeStepFactor(errors_, timeSteps_);
             if( verbose_ )
                 OpmLog::info(fmt::format("Computed step size (pow): {} days", unit::convert::to( newDt, unit::day )));
@@ -369,12 +388,12 @@ namespace Opm
     {
         bool acceptTimeStep = true;
 
-        /*if (rejectCompletedStep_ && chop_) {
-            chop_ = false;
+        /*if (rejectCompletedStep_ && chopCounter_ < 2) {
+            chopCounter_++;
             acceptTimeStep = false;
         }
         else {
-            chop_ = true;
+            chopCounter_ = 0;
         }*/
 
         // Return false if chosen tolerance test version fails
@@ -384,7 +403,9 @@ namespace Opm
         }
         else if (toleranceTestVersion_ == "control-error-filtering")
         {
-            double stepFactor = timeStepFactor(errors_, timeSteps_);
+            const std::vector<double> tempErrors{errors_[0], errors_[1], error};
+            const std::vector<double> tempTimeSteps{timeSteps_[0], timeSteps_[1], timeStep};
+            double stepFactor = timeStepFactor(tempErrors, tempTimeSteps);
             if (rejectCompletedStep_ && stepFactor < maxReductionTimeStep_) { acceptTimeStep = false; }
         }
         else

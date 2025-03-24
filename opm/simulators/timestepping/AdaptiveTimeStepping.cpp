@@ -146,6 +146,8 @@ void registerAdaptiveParameters()
         ("TODO!");
     Parameters::Register<Parameters::TimeStepControlMaxReductionTimeStep>
         ("TODO!");
+    Parameters::Register<Parameters::TimeStepControlParameters>
+        ("TODO!");
 }
 
 std::tuple<TimeStepControlType, std::unique_ptr<TimeStepControlInterface>, bool>
@@ -228,13 +230,15 @@ createController(const UnitSystem& unitSystem)
              const bool rejectCompletedStep = Parameters::Get<Parameters::TimeStepControlRejectCompletedStep>(); // false
              const std::string toleranceTestVersion = Parameters::Get<Parameters::TimeStepControlToleranceTestVersion>(); // "just-tolerance"
              const double maxReductionTimeStep = Parameters::Get<Parameters::TimeStepControlMaxReductionTimeStep>(); // 0.1
+             const std::string parameters = Parameters::Get<Parameters::TimeStepControlParameters>(); // ""
              return RetVal{
                  TimeStepControlType::General3rdOrder,
                  std::make_unique<General3rdOrderController>(tol,
                                                              safetyFactor,
                                                              rejectCompletedStep,
                                                              toleranceTestVersion,
-                                                             maxReductionTimeStep),
+                                                             maxReductionTimeStep,
+                                                             parameters),
                  false
              };
         }},

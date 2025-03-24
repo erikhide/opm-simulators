@@ -206,13 +206,14 @@ namespace Opm
                                    const bool rejectCompletedStep = false,
                                    const std::string toleranceTestVersion = "just-tolerance",
                                    const double maxReductionTimeStep = 0.1,
+                                   const std::string parameters = "",
                                    const bool verbose = false );
 
         static General3rdOrderController serializationTestObject();
 
         double computeTimeStepSize(const double dt,
-                                   const int /*iterations */,
-                                   const RelativeChangeInterface& relativeChange,
+                                   const int /* iterations */,
+                                   const RelativeChangeInterface& /* relativeChange */,
                                    const AdaptiveSimulatorTimer& substepTimer) const override;
         
         double timeStepFactor(const std::vector<double> errors, const std::vector<double> timeSteps) const;
@@ -241,14 +242,15 @@ namespace Opm
         const bool rejectCompletedStep_ = false;
         mutable std::vector<double> errors_{};
         mutable std::vector<double> timeSteps_{};
-        const std::array<double, 3> beta_{ 0.125, 0.25, 0.125 };
-        const std::array<double, 3> alpha_{ 0.375, 0.125 };
+        mutable std::array<double, 3> beta_{ 0.125, 0.25, 0.125 };
+        mutable std::array<double, 3> alpha_{ 0.375, 0.125 };
         mutable int counterSinceFailure_ = 0;
         mutable std::string controllerVersion_ = "I-controller";
         const std::string toleranceTestVersion_ = "";
         const double maxReductionTimeStep_ = 0.1;
         const bool verbose_ = false;
-        mutable bool chop_ = true;
+        mutable int chopCounter_ = 0;
+        mutable int timeStepNumber_ = 0;
     };
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////

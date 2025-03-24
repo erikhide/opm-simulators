@@ -806,13 +806,6 @@ run()
         if (substep_report.converged || checkContinueOnUnconvergedSolution_(dt)) {
             ++this->substep_timer_;   // advance by current dt
 
-            double temp_relative_change = solver_().model().relativeChange();
-            if (solver_().model().simulator().gridView().comm().rank() == 0)
-            {
-                std::cout << "RC: " << temp_relative_change << std::endl;
-                std::cout << "T: " << dt << std::endl;
-            }
-
             const int iterations = getNumIterations_(substep_report);
             auto dt_estimate = timeStepControlComputeEstimate_(
                                      dt, iterations, this->substep_timer_);
@@ -844,7 +837,6 @@ run()
             if (substep_report.time_step_rejected) {
                 const double tol =  Parameters::Get<Parameters::TimeStepControlTolerance>();
                 const double safetyFactor = Parameters::Get<Parameters::TimeStepControlSafetyFactor>();
-                //new_time_step = dt;
                 new_time_step = std::sqrt(safetyFactor * tol / solver_().model().relativeChange()) * dt;
             }
 

@@ -175,13 +175,24 @@ struct NonlinearSolverParameters
                 std::string msg = "Solver convergence failure - Failed to complete a time step within " + std::to_string(maxIter()) + " iterations.";
                 OPM_THROW_NOLOG(TooManyIterations, msg);
             }
+            double temp_relative_change = model_->relativeChange();
             if (!timeStepControl.timeStepAccepted(model_->relativeChange(), timer.currentStepLength())) {
                 report.converged = false;
                 report.time_step_rejected = true;
                 failureReport_ = report;
+                
+                if (model_->simulator().gridView().comm().rank() == 0) {
+                    std::cout << "Failed RC: " << temp_relative_change << std::endl;
+                }
 
                 std::string msg = "Time step was too large. Tolerance test failed.";
                 OPM_THROW_NOLOG(TimeSteppingBreakdown, msg);
+            }
+
+            if (model_->simulator().gridView().comm().rank() == 0)
+            {
+                std::cout << "RC: " << temp_relative_change << std::endl;
+                std::cout << "T: " << report.timestep_length << std::endl;
             }
 
             // Do model-specific post-step actions.

@@ -61,6 +61,7 @@ struct TimeStepControlSafetyFactor { static constexpr double value = 0.8; };
 struct TimeStepControlRejectCompletedStep { static constexpr bool value = false; };
 struct TimeStepControlToleranceTestVersion { static constexpr auto value = "just-tolerance"; };
 struct TimeStepControlMaxReductionTimeStep { static constexpr double value = 0.1; };
+struct TimeStepControlParameters { static constexpr auto value = ""; };
 
 } // namespace Opm::Parameters
 
