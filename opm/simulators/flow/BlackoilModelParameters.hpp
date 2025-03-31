@@ -129,8 +129,8 @@ struct UseImplicitIpr { static constexpr bool value = true; };
 struct CheckGroupConstraintsInnerWellIterations { static constexpr bool value = true; };
 
 // Network solver parameters
-struct NetworkMaxStrictIterations { static constexpr int value = 10; };
-struct NetworkMaxIterations { static constexpr int value = 20; };
+struct NetworkMaxStrictOuterIterations { static constexpr int value = 10; };
+struct NetworkMaxOuterIterations { static constexpr int value = 10; };
 struct NetworkMaxSubIterations { static constexpr int value = 20; };
 template<class Scalar>
 struct NetworkPressureUpdateDampingFactor { static constexpr Scalar value = 0.1; };
@@ -152,6 +152,7 @@ template<class Scalar>
 struct LocalDomainsPartitioningImbalance { static constexpr Scalar value = 1.03; };
 
 struct LocalDomainsPartitioningMethod { static constexpr auto value = "zoltan"; };
+struct LocalDomainsPartitionWellNeighborLevels { static constexpr int value = 1; };
 struct LocalDomainsOrderingMeasure { static constexpr auto value = "maxpressure"; };
 
 struct ConvergenceMonitoring { static constexpr bool value = false; };
@@ -303,10 +304,10 @@ public:
     bool check_group_constraints_inner_well_iterations_; 
 
     /// Maximum number of iterations in the network solver before relaxing tolerance
-    int network_max_strict_iterations_;
+    int network_max_strict_outer_iterations_;
 
     /// Maximum number of iterations in the network solver before giving up
-    int network_max_iterations_;
+    int network_max_outer_iterations_;
 
     /// Maximum number of sub-iterations to update network pressures (within a single well/group control update)
     int network_max_sub_iterations_;
@@ -329,9 +330,10 @@ public:
 
     int nldd_num_initial_newton_iter_{1};
     int num_local_domains_{0};
-    Scalar local_domain_partition_imbalance_{1.03};
-    std::string local_domain_partition_method_;
-    DomainOrderingMeasure local_domain_ordering_{DomainOrderingMeasure::MaxPressure};
+    Scalar local_domains_partition_imbalance_{1.03};
+    std::string local_domains_partition_method_;
+    int local_domains_partition_well_neighbor_levels_{1};
+    DomainOrderingMeasure local_domains_ordering_{DomainOrderingMeasure::MaxPressure};
 
     bool write_partitions_{false};
 
