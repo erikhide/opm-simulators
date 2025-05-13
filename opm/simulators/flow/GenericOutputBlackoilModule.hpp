@@ -114,19 +114,17 @@ public:
     void outputMSWLog(std::size_t reportStepNum);
 
     // calculate Initial Fluid In Place
-    Inplace calc_initial_inplace(const Parallel::Communication& comm);
+    void calc_initial_inplace(const Parallel::Communication& comm);
 
     // calculate Fluid In Place
     Inplace calc_inplace(std::map<std::string, double>& miscSummaryData,
                          std::map<std::string, std::vector<double>>& regionData,
                          const Parallel::Communication& comm);
 
-    void outputFipAndResvLog(const Inplace& inplace,
-                         const std::size_t reportStepNum,
-                         double elapsed,
-                         boost::posix_time::ptime currentDate,
-                         const bool substep,
-                         const Parallel::Communication& comm);
+    void outputWellspecReport(const std::vector<std::string>& changedWells,
+                              const std::size_t reportStepNum,
+                              const double elapsed,
+                              boost::posix_time::ptime currentDate) const;
 
     void outputErrorLog(const Parallel::Communication& comm) const;
 
@@ -224,9 +222,9 @@ public:
         return extraBlockData_;
     }
 
-    const Inplace& initialInplace() const
+    const std::optional<Inplace>& initialInplace() const
     {
-        return this->initialInplace_.value();
+        return this->initialInplace_;
     }
 
     bool localDataValid() const{
@@ -332,7 +330,8 @@ protected:
     void setupExtraBlockData(const std::size_t        reportStepNum,
                              std::function<bool(int)> isCartIdxOnThisRank);
 
-    virtual bool isDefunctParallelWell(std::string wname) const = 0;
+    virtual bool isDefunctParallelWell(const std::string& wname) const = 0;
+    virtual bool isOwnedByCurrentRank(const std::string& wname) const = 0;
 
     const EclipseState& eclState_;
     const Schedule& schedule_;

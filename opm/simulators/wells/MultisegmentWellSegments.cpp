@@ -29,10 +29,10 @@
 
 #include <opm/material/densead/EvaluationFormat.hpp>
 
-#include <opm/material/fluidsystems/BlackOilDefaultIndexTraits.hpp>
+#include <opm/material/fluidsystems/BlackOilDefaultFluidSystemIndices.hpp>
 #include <opm/material/fluidsystems/BlackOilFluidSystem.hpp>
 
-#include <opm/models/blackoil/blackoilindices.hh>
+#include <opm/models/blackoil/blackoilvariableandequationindices.hh>
 #include <opm/models/blackoil/blackoilonephaseindices.hh>
 #include <opm/models/blackoil/blackoiltwophaseindices.hh>
 
@@ -63,7 +63,11 @@ MultisegmentWellSegments(const int numSegments,
                          const ParallelWellInfo<Scalar>& parallel_well_info,
                          WellInterfaceGeneric<Scalar>& well)
     : perforations_(numSegments)
-    , local_perforation_depth_diffs_(well.numPerfs(), 0.0)
+    , local_perforation_depth_diffs_(well.numLocalPerfs(), 0.0)
+    // Generally, the info stored with the class MultisegmentWellSegments is global, i.e., the same across all
+    // processes, since segments do not have a 1:1 correspondence to the grid. All members of this class store
+    // global information, except for local_perforation_depth_diffs_, which is the only one that contains only
+    // local information. This is an exception and intentionally, since here, we only need the local entries.
     , inlets_(well.wellEcl().getSegments().size())
     , depth_diffs_(numSegments, 0.0)
     , densities_(numSegments, 0.0)
@@ -87,7 +91,7 @@ MultisegmentWellSegments(const int numSegments,
     // side
     int i_perf_wells = 0;
     // The perfDepth vector will contain the depths of all perforations across all processes of this well!
-    int num_perfs_whole_mswell = parallel_well_info.communication().sum(well.numPerfs());
+    int num_perfs_whole_mswell = parallel_well_info.communication().sum(well.numLocalPerfs());
     well.perfDepth().resize(num_perfs_whole_mswell, 0.0);
     const auto& segment_set = well_.wellEcl().getSegments();
     for (std::size_t perf = 0; perf < completion_set.size(); ++perf) {
@@ -104,7 +108,7 @@ MultisegmentWellSegments(const int numSegments,
             perforations_[segment_index].push_back(i_perf_wells);
             well.perfDepth()[i_perf_wells] = connection.depth();
             const Scalar segment_depth = segment_set[segment_index].depth();
-            int local_perf_index = parallel_well_info.globalToLocal(i_perf_wells);
+            int local_perf_index = parallel_well_info.activeToLocal(i_perf_wells);
             if (local_perf_index > -1) // If local_perf_index == -1, then the perforation is not on this process
                 local_perforation_depth_diffs_[local_perf_index] = well_.perfDepth()[i_perf_wells] - segment_depth;
             i_perf_wells++;
@@ -993,7 +997,7 @@ mixtureDensityWithExponents(const AutoICD& aicd, const int seg) const
 }
 
 template<class Scalar>
-using FS = BlackOilFluidSystem<Scalar,BlackOilDefaultIndexTraits>;
+using FS = BlackOilFluidSystem<Scalar, BlackOilDefaultFluidSystemIndices>;
 
 #define INSTANTIATE(T,...) \
     template class MultisegmentWellSegments<FS<T>,__VA_ARGS__>;
@@ -1013,17 +1017,17 @@ using FS = BlackOilFluidSystem<Scalar,BlackOilDefaultIndexTraits>;
     INSTANTIATE(T,BlackOilTwoPhaseIndices<0u,0u,0u,1u,false,false,0u,0u,0u>) \
     INSTANTIATE(T,BlackOilTwoPhaseIndices<0u,0u,0u,1u,false,true,0u,0u,0u>)  \
     INSTANTIATE(T,BlackOilTwoPhaseIndices<1u,0u,0u,0u,false,false,0u,0u,0u>) \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,0u,false,false,0u,0u>)            \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,0u,true,false,0u,0u>)             \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,0u,false,true,0u,0u>)             \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,0u,false,true,2u,0u>)             \
-    INSTANTIATE(T,BlackOilIndices<1u,0u,0u,0u,false,false,0u,0u>)            \
-    INSTANTIATE(T,BlackOilIndices<0u,1u,0u,0u,false,false,0u,0u>)            \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,1u,0u,false,false,0u,0u>)            \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,1u,false,false,0u,0u>)            \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,0u,false,false,1u,0u>)            \
-    INSTANTIATE(T,BlackOilIndices<0u,0u,0u,1u,false,true,0u,0u>)             \
-    INSTANTIATE(T,BlackOilIndices<1u,0u,0u,0u,true,false,0u,0u>)
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,0u,false,false,0u,0u>)            \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,0u,true,false,0u,0u>)             \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,0u,false,true,0u,0u>)             \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,0u,false,true,2u,0u>)             \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<1u,0u,0u,0u,false,false,0u,0u>)            \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,1u,0u,0u,false,false,0u,0u>)            \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,1u,0u,false,false,0u,0u>)            \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,1u,false,false,0u,0u>)            \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,0u,false,false,1u,0u>)            \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<0u,0u,0u,1u,false,true,0u,0u>)             \
+    INSTANTIATE(T,BlackOilVariableAndEquationIndices<1u,0u,0u,0u,true,false,0u,0u>)
 
 INSTANTIATE_TYPE(double)
 

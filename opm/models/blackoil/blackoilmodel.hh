@@ -40,7 +40,7 @@
 #include <opm/models/blackoil/blackoilextbomodules.hh>
 #include <opm/models/blackoil/blackoilextensivequantities.hh>
 #include <opm/models/blackoil/blackoilfoammodules.hh>
-#include <opm/models/blackoil/blackoilindices.hh>
+#include <opm/models/blackoil/blackoilvariableandequationindices.hh>
 #include <opm/models/blackoil/blackoilintensivequantities.hh>
 #include <opm/models/blackoil/blackoillocalresidual.hh>
 #include <opm/models/blackoil/blackoilmicpmodules.hh>
@@ -122,14 +122,14 @@ struct FluxModule<TypeTag, TTag::BlackOilModel> { using type = BlackOilDarcyFlux
 //! The indices required by the model
 template<class TypeTag>
 struct Indices<TypeTag, TTag::BlackOilModel>
-{ using type = BlackOilIndices<getPropValue<TypeTag, Properties::EnableSolvent>(),
-                               getPropValue<TypeTag, Properties::EnableExtbo>(),
-                               getPropValue<TypeTag, Properties::EnablePolymer>(),
-                               getPropValue<TypeTag, Properties::EnableEnergy>(),
-                               getPropValue<TypeTag, Properties::EnableFoam>(),
-                               getPropValue<TypeTag, Properties::EnableBrine>(),
-                               /*PVOffset=*/0,
-                               getPropValue<TypeTag, Properties::EnableMICP>()>; };
+{ using type = BlackOilVariableAndEquationIndices<getPropValue<TypeTag, Properties::EnableSolvent>(),
+                                                  getPropValue<TypeTag, Properties::EnableExtbo>(),
+                                                  getPropValue<TypeTag, Properties::EnablePolymer>(),
+                                                  getPropValue<TypeTag, Properties::EnableEnergy>(),
+                                                  getPropValue<TypeTag, Properties::EnableFoam>(),
+                                                  getPropValue<TypeTag, Properties::EnableBrine>(),
+                                                  /*PVOffset=*/0,
+                                                  getPropValue<TypeTag, Properties::EnableMICP>()>; };
 
 //! Set the fluid system to the black-oil fluid system by default
 template<class TypeTag>
@@ -195,6 +195,19 @@ private:
 public:
     using type = Scalar;
     static constexpr Scalar value = 1.0/(30.0*4184.0*alpha);
+};
+
+//! similarly to the energy equation, the urea equation in MICP is scaled by a factor of 0.1
+template<class TypeTag>
+struct BlackOilUreaScalingFactor<TypeTag, TTag::BlackOilModel>
+{
+private:
+    using Scalar = GetPropType<TypeTag, Properties::Scalar>;
+    static constexpr Scalar alpha = getPropValue<TypeTag, Properties::BlackoilConserveSurfaceVolume>() ? 1000.0 : 1.0;
+
+public:
+    using type = Scalar;
+    static constexpr Scalar value = 1.0/(10.0*alpha);
 };
 
 // by default, ebos formulates the conservation equations in terms of mass not surface

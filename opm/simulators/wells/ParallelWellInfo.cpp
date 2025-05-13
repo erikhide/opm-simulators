@@ -24,6 +24,10 @@
 #include <opm/input/eclipse/Schedule/Well/WellConnections.hpp>
 #include <opm/material/densead/Evaluation.hpp>
 
+#if HAVE_MPI
+#include <opm/simulators/utils/MPISerializer.hpp>
+#endif
+
 #include <fmt/format.h>
 #include <cassert>
 #include <iterator>
@@ -133,7 +137,7 @@ void GlobalPerfContainerFactory<Scalar>::buildLocalToGlobalMap() const {
 
 template<class Scalar>
 int GlobalPerfContainerFactory<Scalar>::localToGlobal(std::size_t localIndex) const {
-    if (local_indices_.size() == 0)
+    if (comm_.size() == 1)
         return localIndex;
     if (!l2g_map_built_)
         buildLocalToGlobalMap();
@@ -154,7 +158,7 @@ void GlobalPerfContainerFactory<Scalar>::buildGlobalToLocalMap() const {
 
 template<class Scalar>
 int GlobalPerfContainerFactory<Scalar>::globalToLocal(const int globalIndex) const {
-    if (local_indices_.size() == 0)
+    if (comm_.size() == 1)
         return globalIndex;
     if (!g2l_map_built_) {
         buildGlobalToLocalMap();
@@ -524,6 +528,35 @@ ParallelWellInfo<Scalar>::ParallelWellInfo(const std::pair<std::string, bool>& w
 }
 
 template<class Scalar>
+void ParallelWellInfo<Scalar>::setActiveToLocalMap(const std::unordered_map<int,int> active_to_local_map) const {
+    //active_to_local_map_ is marked as mutable
+    active_to_local_map_ = active_to_local_map;
+    for (const auto& [key, value] : active_to_local_map) {
+        local_to_active_map_[value] = key;
+    }
+}
+
+template<class Scalar>
+int ParallelWellInfo<Scalar>::localToActive(std::size_t localIndex) const {
+    if (comm_->size() == 1)
+        return localIndex;
+    auto it = local_to_active_map_.find(localIndex);
+    if (it == local_to_active_map_.end())
+        return -1; // Active index not found
+    return it->second;
+}
+
+template<class Scalar>
+int ParallelWellInfo<Scalar>::activeToLocal(const int activeIndex) const {
+    if (comm_->size() == 1)
+        return activeIndex;
+    auto it = active_to_local_map_.find(activeIndex);
+    if (it == active_to_local_map_.end())
+        return -1; // Active index not found
+    return it->second;
+}
+
+template<class Scalar>
 int ParallelWellInfo<Scalar>::localToGlobal(std::size_t localIndex) const {
     if(globalPerfCont_)
         return globalPerfCont_->localToGlobal(localIndex);
@@ -595,6 +628,7 @@ template<class Scalar>
 template<class T>
 T ParallelWellInfo<Scalar>::broadcastFirstPerforationValue(const T& t) const
 {
+#if HAVE_MPI
     T res = t;
     if (rankWithFirstPerf_ >= 0) {
 #ifndef NDEBUG
@@ -603,12 +637,17 @@ T ParallelWellInfo<Scalar>::broadcastFirstPerforationValue(const T& t) const
         // with other communication if there are bugs
         comm_->barrier();
 #endif
-        comm_->broadcast(&res, 1, rankWithFirstPerf_);
+
+        Parallel::MpiSerializer ser(*comm_);
+        ser.broadcast(Parallel::RootRank{rankWithFirstPerf_}, res);
 #ifndef NDEBUG
         comm_->barrier();
 #endif
     }
     return res;
+#else // !HAVE_MPI
+    return t;
+#endif
 }
 
 template<class Scalar>
@@ -773,9 +812,11 @@ template<class Scalar> using dIter = typename std::vector<Scalar>::iterator;
 template<class Scalar> using cdIter = typename std::vector<Scalar>::const_iterator;
 
 #define INSTANTIATE_BROADCAST_FIRST_PERF_DENSEAD_EVALUATION(T, DIM)                 \
-    template Opm::DenseAd::Evaluation<T, DIM, 0u> Opm::ParallelWellInfo<T>::        \
-        broadcastFirstPerforationValue<Opm::DenseAd::Evaluation<T, DIM, 0u>>        \
-        (Opm::DenseAd::Evaluation<T, DIM, 0u> const&) const;
+    template std::tuple<T, Opm::DenseAd::Evaluation<T, DIM, 0u>,int>                \
+        Opm::ParallelWellInfo<T>::broadcastFirstPerforationValue                    \
+        <std::tuple<T, Opm::DenseAd::Evaluation<T, DIM, 0u>,int>>                   \
+        (std::tuple<T, Opm::DenseAd::Evaluation<T, DIM, 0u>,int> const&)            \
+        const;
 
 #define INSTANTIATE_TYPE(T)                                                         \
     template class CheckDistributedWellConnections<T>;                              \

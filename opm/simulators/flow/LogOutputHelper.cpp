@@ -18,12 +18,13 @@
 */
 
 #include <config.h>
-#include <opm/simulators/utils/moduleVersion.hpp>
+
 #include <opm/simulators/flow/LogOutputHelper.hpp>
 
 #include <opm/common/OpmLog/OpmLog.hpp>
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
 #include <opm/input/eclipse/Schedule/SummaryState.hpp>
 #include <opm/input/eclipse/Schedule/Well/Well.hpp>
@@ -31,8 +32,12 @@
 #include <opm/input/eclipse/Schedule/Well/WellEnums.hpp>
 #include <opm/input/eclipse/Schedule/MSW/WellSegments.hpp>
 
-#include <opm/simulators/utils/PressureAverage.hpp>
 #include <opm/input/eclipse/Units/Units.hpp>
+
+#include <opm/output/eclipse/report/WellSpecification.hpp>
+
+#include <opm/simulators/utils/moduleVersion.hpp>
+#include <opm/simulators/utils/PressureAverage.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -552,11 +557,9 @@ production(const std::size_t reportStepNum,
 
         if (values[Ix::WaterRate] == 0.0) {
             values[Ix::WatGasRatio] = 0;
-        } else {
+        } else if (values[Ix::GasRate] != 0.0) {
             values[Ix::WatGasRatio] = values[Ix::WaterRate] / values[Ix::GasRate];
-        }
-
-        if (std::isnan(values[Ix::WatGasRatio])) {
+        } else {
             values[Ix::WatGasRatio] = 0.0;
         }
 
@@ -595,11 +598,9 @@ production(const std::size_t reportStepNum,
         {
             if (v[Ix::WaterRate] == 0.0) {
                 v[Ix::WatGasRatio] = 0.0;
-            } else {
+            } else if (v[Ix::GasRate] != 0.0) {
                 v[Ix::WatGasRatio] = v[Ix::WaterRate] / v[Ix::GasRate];
-            }
-
-            if (std::isnan(v[Ix::WatGasRatio])) {
+            } else {
                 v[Ix::WatGasRatio] = 0.0;
             }
         };
@@ -635,6 +636,25 @@ production(const std::size_t reportStepNum,
     }
 
     this->endProductionReport_();
+}
+
+template<class Scalar>
+void LogOutputHelper<Scalar>::
+wellSpecification(const std::vector<std::string>& changedWells,
+                  const std::size_t               reportStepNum) const
+{
+    std::ostringstream ss;
+
+    auto blockDepth = PrtFile::Reports::BlockDepthCallback {
+        [&grid = this->eclState_.getInputGrid()]
+        (const std::size_t globalCellIndex)
+        { return grid.getCellDepth(globalCellIndex); }
+    };
+
+    PrtFile::Reports::wellSpecification(changedWells, reportStepNum,
+                                        this->schedule_, blockDepth, ss);
+
+    OpmLog::note(ss.str());
 }
 
 template <typename Scalar>
@@ -1484,6 +1504,7 @@ fipUnitConvert_(std::unordered_map<Inplace::Phase, Scalar>& fip) const
         {Inplace::Phase::CO2InGasPhaseMobKrg,       M::moles},
         {Inplace::Phase::WaterInWaterPhase,         M::liquid_surface_volume},
         {Inplace::Phase::WaterInGasPhase,           M::liquid_surface_volume},
+        {Inplace::Phase::WaterMass,                 M::mass},
         {Inplace::Phase::CO2Mass,                   M::mass},
         {Inplace::Phase::CO2MassInWaterPhase,       M::mass},
         {Inplace::Phase::CO2MassInGasPhase,         M::mass},

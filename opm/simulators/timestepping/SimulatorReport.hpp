@@ -41,6 +41,7 @@ namespace Opm
         double assemble_time_well = 0.0;
         double linear_solve_setup_time = 0.0;
         double linear_solve_time = 0.0;
+        double local_solve_time = 0.0;
         double update_time = 0.0;
         double output_write_time = 0.0;
 
@@ -59,6 +60,16 @@ namespace Opm
         double global_time = 0.0;
         double timestep_length = 0.0;
 
+        // NLDD specific data
+        int num_domains = 0;
+        int num_wells = 0;
+        int num_overlap_cells = 0;
+        int num_owned_cells = 0;
+        int converged_domains = 0;
+        int unconverged_domains = 0;
+        int accepted_unconverged_domains = 0;
+
+
         static SimulatorReportSingle serializationTestObject();
 
         bool operator==(const SimulatorReportSingle&) const;
@@ -68,7 +79,7 @@ namespace Opm
         void reportStep(std::ostream& os) const;
         /// Print a report suitable for the end of a fully implicit case, leaving out the pressure/transport time.
         void reportFullyImplicit(std::ostream& os, const SimulatorReportSingle* failedReport = nullptr) const;
-
+        void reportNLDD(std::ostream& os, const SimulatorReportSingle* failedReport = nullptr) const;
         template<class Serializer>
         void serializeOp(Serializer& serializer)
         {
@@ -81,6 +92,7 @@ namespace Opm
             serializer(assemble_time_well);
             serializer(linear_solve_setup_time);
             serializer(linear_solve_time);
+            serializer(local_solve_time);
             serializer(update_time);
             serializer(output_write_time);
             serializer(total_well_iterations);
@@ -95,6 +107,13 @@ namespace Opm
             serializer(exit_status);
             serializer(global_time);
             serializer(timestep_length);
+            serializer(num_domains);
+            serializer(num_wells);
+            serializer(num_overlap_cells);
+            serializer(num_owned_cells);
+            serializer(converged_domains);
+            serializer(unconverged_domains);
+            serializer(accepted_unconverged_domains);
         }
     };
 
@@ -110,6 +129,7 @@ namespace Opm
         void operator+=(const SimulatorReportSingle& sr);
         void operator+=(const SimulatorReport& sr);
         void reportFullyImplicit(std::ostream& os) const;
+        void reportNLDD(std::ostream& os) const;
         void fullReports(std::ostream& os) const;
 
         template<class Serializer>

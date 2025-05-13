@@ -49,10 +49,12 @@
 #include <opm/models/blackoil/blackoilenergymodules.hh>
 #include <opm/models/blackoil/blackoildiffusionmodule.hh>
 #include <opm/models/blackoil/blackoilmicpmodules.hh>
+#include <opm/models/blackoil/blackoilconvectivemixingmodule.hh>
 #include <opm/models/common/directionalmobility.hh>
 
 #include <opm/utility/CopyablePtr.hpp>
 
+#include <stdexcept>
 #include <utility>
 
 #include <fmt/format.h>
@@ -78,6 +80,7 @@ class BlackOilIntensiveQuantitiesGlobalIndex
     , public BlackOilBrineIntensiveQuantities<TypeTag>
     , public BlackOilEnergyIntensiveQuantitiesGlobalIndex<TypeTag>
     , public BlackOilMICPIntensiveQuantities<TypeTag>
+    , public BlackOilConvectiveMixingIntensiveQuantities<TypeTag>
 {
     using ParentType = GetPropType<TypeTag, Properties::DiscIntensiveQuantities>;
     using Implementation = GetPropType<TypeTag, Properties::IntensiveQuantities>;
@@ -103,6 +106,7 @@ class BlackOilIntensiveQuantitiesGlobalIndex
     enum { enableTemperature = getPropValue<TypeTag, Properties::EnableTemperature>() };
     enum { enableEnergy = getPropValue<TypeTag, Properties::EnableEnergy>() };
     enum { enableDiffusion = getPropValue<TypeTag, Properties::EnableDiffusion>() };
+    enum { enableConvectiveMixing = getPropValue<TypeTag, Properties::EnableConvectiveMixing>() };
     enum { enableMICP = getPropValue<TypeTag, Properties::EnableMICP>() };
     enum { numPhases = getPropValue<TypeTag, Properties::NumPhases>() };
     enum { numComponents = getPropValue<TypeTag, Properties::NumComponents>() };
@@ -125,7 +129,7 @@ class BlackOilIntensiveQuantitiesGlobalIndex
     using FluxIntensiveQuantities = typename FluxModule::FluxIntensiveQuantities;
     using DiffusionIntensiveQuantities = BlackOilDiffusionIntensiveQuantities<TypeTag, enableDiffusion>;
 
-    using DirectionalMobilityPtr = Opm::Utility::CopyablePtr<DirectionalMobility<TypeTag, Evaluation>>;
+    using DirectionalMobilityPtr = Utility::CopyablePtr<DirectionalMobility<TypeTag>>;
 
 public:
     using FluidState = BlackOilFluidState<Evaluation,
@@ -382,6 +386,10 @@ public:
 
         rockCompTransMultiplier_ = problem.template rockCompTransMultiplier<Evaluation>(*this, globalSpaceIdx);
 
+        if constexpr (enableConvectiveMixing) {
+            asImp_().updateSaturatedDissolutionFactor_();
+        }
+
 #ifndef NDEBUG
         // some safety checks in debug mode
         for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++ phaseIdx) {
@@ -416,13 +424,13 @@ public:
     {
         using Dir = FaceDir::DirEnum;
         if (dirMob_) {
-            switch(facedir) {
+            switch (facedir) {
             case Dir::XPlus:
-                return dirMob_->mobilityX_[phaseIdx];
+                return dirMob_->getArray(0)[phaseIdx];
             case Dir::YPlus:
-                return dirMob_->mobilityY_[phaseIdx];
+                return dirMob_->getArray(1)[phaseIdx];
             case Dir::ZPlus:
-                return dirMob_->mobilityZ_[phaseIdx];
+                return dirMob_->getArray(2)[phaseIdx];
             default:
                 throw std::runtime_error("Unexpected face direction");
             }
@@ -511,6 +519,11 @@ public:
      */
     Scalar referencePorosity() const
     { return referencePorosity_; }
+
+    const Evaluation& permFactor() const
+    {
+        throw std::logic_error("permFactor() is not yet implemented for compositional modeling"); 
+    }
 
 private:
     friend BlackOilSolventIntensiveQuantities<TypeTag>;

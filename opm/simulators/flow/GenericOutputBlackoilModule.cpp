@@ -30,7 +30,7 @@
 
 #include <opm/material/fluidmatrixinteractions/EclHysteresisConfig.hpp>
 #include <opm/material/fluidsystems/BlackOilFluidSystem.hpp>
-#include <opm/material/fluidsystems/BlackOilDefaultIndexTraits.hpp>
+#include <opm/material/fluidsystems/BlackOilDefaultFluidSystemIndices.hpp>
 #include <opm/material/fluidsystems/GenericOilGasWaterFluidSystem.hpp>
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
@@ -76,15 +76,43 @@ namespace {
     defineInterRegionFlowArrays(const Opm::EclipseState&  eclState,
                                 const Opm::SummaryConfig& summaryConfig)
     {
-        auto regions = std::vector<Opm::InterRegFlowMap::SingleRegion>{};
-
-        const auto& fprops = eclState.fieldProps();
-        for (const auto& arrayName : summaryConfig.fip_regions_interreg_flow()) {
-            regions.push_back({ arrayName, std::cref(fprops.get_int(arrayName)) });
-        }
+        using SRegion = Opm::InterRegFlowMap::SingleRegion;
+        auto regions = std::vector<SRegion>{};
+        const auto fip_regions = summaryConfig.fip_regions_interreg_flow();
+        std::transform(fip_regions.begin(), fip_regions.end(),
+                       std::back_inserter(regions),
+                       [&fprops = eclState.fieldProps()](const auto& arrayName)
+                       { return SRegion{arrayName, std::cref(fprops.get_int(arrayName))}; });
 
         return regions;
     }
+
+    //! \brief Functor for reordering phase indices for name resolution.
+    //! \details This is the identity mapping for BlackoilFluidSystem.
+    template<class T>
+    struct PhaseReorder
+    {
+        int operator()(const int phase)
+        {
+            return phase;
+        }
+    };
+
+    //! \brief Functor for reordering phase indices for name resolution.
+    //! \details Re-order the GenericOilGasWaterFluidSystem phase indices to match
+    //!          BlackoilFluidSystem order.
+    template<class Scalar, int NumComp, bool enableWater>
+    struct PhaseReorder<Opm::GenericOilGasWaterFluidSystem<Scalar,NumComp,enableWater>>
+    {
+        int operator()(const int phase)
+        {
+            switch (phase) {
+            case 0: return 1;
+            case 1: return 2;
+            default: return 0;
+            }
+        }
+    };
 }
 
 namespace Opm {
@@ -129,7 +157,7 @@ GenericOutputBlackoilModule(const EclipseState& eclState,
     , flowsC_(schedule, summaryConfig)
     , rftC_(eclState_, schedule_,
             [this](const std::string& wname)
-            { return !isDefunctParallelWell(wname); })
+            { return this->isOwnedByCurrentRank(wname); })
     , rst_conv_(std::move(globalCell), comm)
     , local_data_valid_(false)
 {
@@ -236,11 +264,12 @@ outputMSWLog(std::size_t reportStepNum)
 }
 
 template<class FluidSystem>
-Inplace GenericOutputBlackoilModule<FluidSystem>::
+void GenericOutputBlackoilModule<FluidSystem>::
 calc_initial_inplace(const Parallel::Communication& comm)
 {
-    // calling accumulateRegionSums() updates InitialInplace_ as a side effect
-    return this->accumulateRegionSums(comm);
+    if (!this->initialInplace_.has_value()) {
+        this->initialInplace_ = this->accumulateRegionSums(comm);
+    }
 }
 
 template<class FluidSystem>
@@ -264,53 +293,15 @@ calc_inplace(std::map<std::string, double>& miscSummaryData,
 
 template<class FluidSystem>
 void GenericOutputBlackoilModule<FluidSystem>::
-outputFipAndResvLog(const Inplace& inplace,
-                         const std::size_t reportStepNum,
-                         double elapsed,
-                         boost::posix_time::ptime currentDate,
-                         const bool substep,
-                         const Parallel::Communication& comm)
+outputWellspecReport(const std::vector<std::string>& changedWells,
+                     const std::size_t               reportStepNum,
+                     const double                    elapsed,
+                     boost::posix_time::ptime        currentDate) const
 {
-    if (comm.rank() != 0) {
-        return;
-    }
-
-    // For report step 0 we use the RPTSOL config, else derive from RPTSCHED
-    std::unique_ptr<FIPConfig> fipSched;
-    if (reportStepNum > 0) {
-        const auto& rpt = this->schedule_[reportStepNum-1].rpt_config.get();
-        fipSched = std::make_unique<FIPConfig>(rpt);
-    }
-    const FIPConfig& fipc = reportStepNum == 0 ? this->eclState_.getEclipseConfig().fip()
-                                               : *fipSched;
-
-    if (!substep && !forceDisableFipOutput_ && fipc.output(FIPConfig::OutputField::FIELD)) {
-
-        logOutput_.timeStamp("BALANCE", elapsed, reportStepNum, currentDate);
-
-        logOutput_.fip(inplace, this->initialInplace(), "");  
-        
-        if (fipc.output(FIPConfig::OutputField::FIPNUM)) { 
-            logOutput_.fip(inplace, this->initialInplace(), "FIPNUM");    
-            
-            if (fipc.output(FIPConfig::OutputField::RESV))
-                logOutput_.fipResv(inplace, "FIPNUM"); 
-        }
-        
-        if (fipc.output(FIPConfig::OutputField::FIP)) {
-            for (const auto& reg : this->regions_) {
-                if (reg.first != "FIPNUM") {
-                    std::ostringstream ss;
-                    ss << "BAL" << reg.first.substr(3);
-                    logOutput_.timeStamp(ss.str(), elapsed, reportStepNum, currentDate);
-                    logOutput_.fip(inplace, this->initialInplace(), reg.first);
-                    
-                    if (fipc.output(FIPConfig::OutputField::RESV))
-                        logOutput_.fipResv(inplace, reg.first); 
-                }
-            }
-        }
-    }
+    this->logOutput_.timeStamp("WELSPECS", elapsed,
+                               static_cast<int>(reportStepNum),
+                               currentDate);
+    this->logOutput_.wellSpecification(changedWells, reportStepNum);
 }
 
 template<class FluidSystem>
@@ -347,7 +338,12 @@ assignToSolution(data::Solution& sol)
     std::vector<DataEntry> baseSolutionVector;
     addEntry(baseSolutionVector, "1OVERBG",  UnitSystem::measure::gas_inverse_formation_volume_factor,   invB_[gasPhaseIdx],                                              gasPhaseIdx);
     addEntry(baseSolutionVector, "1OVERBO",  UnitSystem::measure::oil_inverse_formation_volume_factor,   invB_[oilPhaseIdx],                                              oilPhaseIdx);
-    addEntry(baseSolutionVector, "1OVERBW",  UnitSystem::measure::water_inverse_formation_volume_factor, invB_[waterPhaseIdx],                                            waterPhaseIdx);
+
+    // avoid output with generic fluid system and disabled water phase
+    if constexpr (numPhases > 2) {
+        addEntry(baseSolutionVector,
+                                 "1OVERBW",  UnitSystem::measure::water_inverse_formation_volume_factor, invB_[waterPhaseIdx],                                            waterPhaseIdx);
+    }
     addEntry(baseSolutionVector, "FOAM",     UnitSystem::measure::identity,                              cFoam_);
     addEntry(baseSolutionVector, "GASKR",    UnitSystem::measure::identity,                              relativePermeability_[gasPhaseIdx],                              gasPhaseIdx);
     addEntry(baseSolutionVector, "GAS_DEN",  UnitSystem::measure::density,                               density_[gasPhaseIdx],                                           gasPhaseIdx);
@@ -377,9 +373,13 @@ assignToSolution(data::Solution& sol)
     addEntry(baseSolutionVector, "SSOLVENT", UnitSystem::measure::identity,                              sSol_);
     addEntry(baseSolutionVector, "SWHY1",    UnitSystem::measure::identity,                              swmin_);
     addEntry(baseSolutionVector, "SWMAX",    UnitSystem::measure::identity,                              swMax_);
-    addEntry(baseSolutionVector, "WATKR",    UnitSystem::measure::identity,                              relativePermeability_[waterPhaseIdx],                            waterPhaseIdx);
-    addEntry(baseSolutionVector, "WAT_DEN",  UnitSystem::measure::density,                               density_[waterPhaseIdx],                                         waterPhaseIdx);
-    addEntry(baseSolutionVector, "WAT_VISC", UnitSystem::measure::viscosity,                             viscosity_[waterPhaseIdx],                                       waterPhaseIdx);
+
+    // avoid output with generic fluid system and disabled water phase
+    if constexpr (numPhases > 2) {
+        addEntry(baseSolutionVector, "WATKR",    UnitSystem::measure::identity,                          relativePermeability_[waterPhaseIdx],                            waterPhaseIdx);
+        addEntry(baseSolutionVector, "WAT_DEN",  UnitSystem::measure::density,                           density_[waterPhaseIdx],                                         waterPhaseIdx);
+        addEntry(baseSolutionVector, "WAT_VISC", UnitSystem::measure::viscosity,                         viscosity_[waterPhaseIdx],                                       waterPhaseIdx);
+    }
 
     auto extendedSolutionArrays = std::array {
         DataEntry{"DRSDTCON", UnitSystem::measure::gas_oil_ratio_rate, drsdtcon_},
@@ -583,32 +583,35 @@ regionSum(const ScalarBuffer& property,
           std::size_t maxNumberOfRegions,
           const Parallel::Communication& comm)
 {
-        ScalarBuffer totals(maxNumberOfRegions, 0.0);
+    ScalarBuffer totals(maxNumberOfRegions, 0.0);
 
-        if (property.empty())
-            return totals;
-
-        // the regionId contains the ghost cells
-        // the property does not contain the ghostcells
-        // This code assumes that that the ghostcells are
-        // added after the interior cells
-        // OwnerCellsFirst = True
-        assert(regionId.size() >= property.size());
-        for (std::size_t j = 0; j < property.size(); ++j) {
-            const int regionIdx = regionId[j] - 1;
-            // the cell is not attributed to any region. ignore it!
-            if (regionIdx < 0)
-                continue;
-
-            assert(regionIdx < static_cast<int>(maxNumberOfRegions));
-            totals[regionIdx] += property[j];
-        }
-
-        for (std::size_t i = 0; i < maxNumberOfRegions; ++i)
-            totals[i] = comm.sum(totals[i]);
-
+    if (property.empty()) {
         return totals;
     }
+
+    // the regionId contains the ghost cells
+    // the property does not contain the ghostcells
+    // This code assumes that that the ghostcells are
+    // added after the interior cells
+    // OwnerCellsFirst = True
+    assert(regionId.size() >= property.size());
+    for (std::size_t j = 0; j < property.size(); ++j) {
+        const int regionIdx = regionId[j] - 1;
+        // the cell is not attributed to any region. ignore it!
+        if (regionIdx < 0) {
+            continue;
+        }
+
+        assert(regionIdx < static_cast<int>(maxNumberOfRegions));
+        totals[regionIdx] += property[j];
+    }
+
+    for (std::size_t i = 0; i < maxNumberOfRegions; ++i) {
+        totals[i] = comm.sum(totals[i]);
+    }
+
+    return totals;
+}
 
 template<class FluidSystem>
 void GenericOutputBlackoilModule<FluidSystem>::
@@ -758,7 +761,7 @@ doAllocBuffers(const unsigned bufferSize,
        Entry{&cFoam_,                             "", enableFoam_},
        Entry{&cSalt_,                             "", enableBrine_},
        Entry{&pSalt_,                             "", enableSaltPrecipitation_},
-       Entry{&permFact_,                          "", enableSaltPrecipitation_},
+       Entry{&permFact_,                          "", enableSaltPrecipitation_ || enableMICP_},
        Entry{&soMax_,                             "", oilvap.getType() == OilVapP::VAPPARS},
        Entry{&soMax_,                             "", hysteresisConfig &&
                                                       hysteresisConfig->enableNonWettingHysteresis() &&
@@ -786,7 +789,7 @@ doAllocBuffers(const unsigned bufferSize,
                                                       FluidSystem::phaseIsActive(gasPhaseIdx)},
        Entry{&ppcw_,                          "PPCW", eclState_.fieldProps().has_double("SWATINIT")},
        Entry{&gasDissolutionFactor_,         "RSSAT", FluidSystem::enableDissolvedGas(), false},
-       Entry{&oilVaporizationFactor_,        "RSSAT", FluidSystem::enableVaporizedOil(), false},
+       Entry{&oilVaporizationFactor_,        "RVSAT", FluidSystem::enableVaporizedOil(), false},
        Entry{&gasDissolutionFactorInWater_, "RSWSAT", FluidSystem::enableDissolvedGasInWater(), false},
        Entry{&waterVaporizationFactor_,     "RVWSAT", FluidSystem::enableVaporizedWater(), false},
        Entry{&invB_,                             "B", true, false, EntryPhaseType::GWO},
@@ -824,17 +827,23 @@ doAllocBuffers(const unsigned bufferSize,
     auto getName = [](std::string_view kw, EntryPhaseType type, int phase)
     {
         constexpr auto phaseName = std::array{
-            "GAS",
             "WAT",
-            "OIL"
+            "OIL",
+            "GAS",
         };
+
+        // This method assumes blackoil ordering of phases.
+        // Apply a reordering for other fluid systems (compositional).
+        PhaseReorder<FluidSystem> reorder;
+        phase = reorder(phase);
+
         switch (type) {
         case EntryPhaseType::None:
             return std::string(kw);
 
         case EntryPhaseType::NGWO:
         case EntryPhaseType::GWO:
-            return std::string(kw) + std::string_view{"GWO"}[phase];
+            return std::string(kw) + std::string_view{"WOG"}[phase];
 
         case EntryPhaseType::NGasWatOil:
             return std::string(1,kw[0]) + phaseName[phase];
@@ -878,9 +887,9 @@ doAllocBuffers(const unsigned bufferSize,
                                     [&entry, &handleScalarEntry, &getName, &rstKeywords](PhaseArray* v)
                                     {
                                        constexpr auto phases = std::array{
-                                          gasPhaseIdx,
                                           waterPhaseIdx,
-                                          oilPhaseIdx
+                                          oilPhaseIdx,
+                                          gasPhaseIdx,
                                        };
 
                                        bool required = entry.required;
@@ -1058,15 +1067,6 @@ accumulateRegionSums(const Parallel::Communication& comm)
         makeRegionSum(inplace, region.first, comm);
     }
 
-    // The first time the outputFipLog function is run we store the inplace values in
-    // the initialInplace_ member. This has a problem:
-    //
-    //   o For restarted runs this is obviously wrong.
-    //
-    // Finally it is of course not desirable to mutate state in an output
-    // routine.
-    if (!this->initialInplace_.has_value())
-        this->initialInplace_ = inplace;
     return inplace;
 }
 
@@ -1201,7 +1201,7 @@ assignGlobalFieldsToSolution(data::Solution& sol)
     this->rst_conv_.outputRestart(sol);
 }
 
-template<class T> using FS = BlackOilFluidSystem<T,BlackOilDefaultIndexTraits>;
+template<class T> using FS = BlackOilFluidSystem<T, BlackOilDefaultFluidSystemIndices>;
 
 #define INSTANTIATE_TYPE(T) \
     template class GenericOutputBlackoilModule<FS<T>>;

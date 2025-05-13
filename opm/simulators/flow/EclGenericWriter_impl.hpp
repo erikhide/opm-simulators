@@ -276,8 +276,8 @@ extractOutputTransAndNNC(const std::function<unsigned int(unsigned int)>& map)
 #if HAVE_MPI
     if (collectOnIORank_.isParallel()) {
         const auto& comm = grid_.comm();
-        Opm::Parallel::MpiSerializer ser(comm);
-        ser.broadcast(outputNnc_);
+        Parallel::MpiSerializer ser(comm);
+        ser.broadcast(Parallel::RootRank{0}, outputNnc_);
     }
 #endif
 }
@@ -633,7 +633,7 @@ evalSummary(const int                                            reportStepNum,
             const std::map<std::string, double>&                 miscSummaryData,
             const std::map<std::string, std::vector<double>>&    regionData,
             const Inplace&                                       inplace,
-            const Inplace&                                       initialInPlace,
+            const std::optional<Inplace>&                        initialInPlace,
             const InterRegFlowMap&                               interRegFlows,
             SummaryState&                                        summaryState,
             UDQState&                                            udqState)

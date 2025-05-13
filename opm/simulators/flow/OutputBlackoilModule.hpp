@@ -114,6 +114,7 @@ class OutputBlackOilModule : public GenericOutputBlackoilModule<GetPropType<Type
     static constexpr int oilCompIdx = FluidSystem::oilCompIdx;
     static constexpr int waterCompIdx = FluidSystem::waterCompIdx;
     enum { enableEnergy = getPropValue<TypeTag, Properties::EnableEnergy>() };
+    enum { enableMICP = getPropValue<TypeTag, Properties::EnableMICP>() };
 
     template<int idx, class VectorType>
     static Scalar value_or_zero(const VectorType& v)
@@ -316,6 +317,57 @@ public:
             }
             if (bee_it != this->extraBlockExtractors_.end()) {
                 BlockExtractor::process(bee_it->second, ectx);
+            }
+        }
+    }
+
+    void outputFipAndResvLog(const Inplace& inplace,
+                             const std::size_t reportStepNum,
+                             double elapsed,
+                             boost::posix_time::ptime currentDate,
+                             const bool substep,
+                             const Parallel::Communication& comm)
+    {
+
+        if (comm.rank() != 0) {
+            return;
+        }
+
+        // For report step 0 we use the RPTSOL config, else derive from RPTSCHED
+        std::unique_ptr<FIPConfig> fipSched;
+        if (reportStepNum > 0) {
+            const auto& rpt = this->schedule_[reportStepNum-1].rpt_config.get();
+            fipSched = std::make_unique<FIPConfig>(rpt);
+        }
+        const FIPConfig& fipc = reportStepNum == 0 ? this->eclState_.getEclipseConfig().fip()
+                                                   : *fipSched;
+
+        if (!substep && !this->forceDisableFipOutput_ && fipc.output(FIPConfig::OutputField::FIELD)) {
+
+            this->logOutput_.timeStamp("BALANCE", elapsed, reportStepNum, currentDate);
+
+            const auto& initial_inplace = this->initialInplace().value();
+            this->logOutput_.fip(inplace, initial_inplace, "");
+
+            if (fipc.output(FIPConfig::OutputField::FIPNUM)) {
+                this->logOutput_.fip(inplace, initial_inplace, "FIPNUM");
+
+                if (fipc.output(FIPConfig::OutputField::RESV))
+                    this->logOutput_.fipResv(inplace, "FIPNUM");
+            }
+
+            if (fipc.output(FIPConfig::OutputField::FIP)) {
+                for (const auto& reg : this->regions_) {
+                    if (reg.first != "FIPNUM") {
+                        std::ostringstream ss;
+                        ss << "BAL" << reg.first.substr(3);
+                        this->logOutput_.timeStamp(ss.str(), elapsed, reportStepNum, currentDate);
+                        this->logOutput_.fip(inplace, initial_inplace, reg.first);
+
+                        if (fipc.output(FIPConfig::OutputField::RESV))
+                            this->logOutput_.fipResv(inplace, reg.first);
+                    }
+                }
             }
         }
     }
@@ -545,7 +597,7 @@ private:
         Problem, std::void_t<decltype(std::declval<Problem>().geoMechModel())>
     > : public std::true_type {};
 
-    bool isDefunctParallelWell(std::string wname) const override
+    bool isDefunctParallelWell(const std::string& wname) const override
     {
         if (simulator_.gridView().comm().size() == 1)
             return false;
@@ -553,6 +605,11 @@ private:
         std::pair<std::string, bool> value {wname, true};
         auto candidate = std::lower_bound(parallelWells.begin(), parallelWells.end(), value);
         return candidate == parallelWells.end() || *candidate != value;
+    }
+
+    bool isOwnedByCurrentRank(const std::string& wname) const override
+    {
+        return this->simulator_.problem().wellModel().isOwner(wname);
     }
 
     void updateFluidInPlace_(const ElementContext& elemCtx, const unsigned dofIdx)
@@ -822,6 +879,30 @@ private:
         {
             this->updateCO2InWater(globalDofIdx, pv, fs);
         }
+
+        if constexpr(enableMICP) {
+            const auto surfVolWat = pv * getValue(fs.invB(waterPhaseIdx));
+            if (this->fipC_.hasMicrobialMass()) {
+                this->updateMicrobialMass(globalDofIdx, intQuants, surfVolWat);
+            }
+            if (this->fipC_.hasOxygenMass()) {
+                this->updateOxygenMass(globalDofIdx, intQuants, surfVolWat);
+            }
+            if (this->fipC_.hasUreaMass()) {
+                this->updateUreaMass(globalDofIdx, intQuants, surfVolWat);
+            }
+            if (this->fipC_.hasBiofilmMass()) {
+                this->updateBiofilmMass(globalDofIdx, intQuants, totVolume);
+            }
+            if (this->fipC_.hasCalciteMass()) {
+                this->updateCalciteMass(globalDofIdx, intQuants, totVolume);
+            }
+        }
+
+        if (this->fipC_.hasWaterMass() && FluidSystem::phaseIsActive(waterPhaseIdx))
+        {
+            this->updateWaterMass(globalDofIdx, fs, fip);
+        }
     }
 
     template <typename FluidState, typename FIPArray>
@@ -938,6 +1019,67 @@ private:
         const Scalar mM = FluidSystem::molarMass(gasCompIdx, fs.pvtRegionIndex());
 
         return xoG * pv * rhoo * so / mM;
+    }
+
+    template <typename FluidState, typename FIPArray>
+    void updateWaterMass(const unsigned    globalDofIdx,
+                         const FluidState& fs,
+                         const FIPArray&   fip
+                         )
+    {
+        const Scalar rhoW = FluidSystem::referenceDensity(waterPhaseIdx, fs.pvtRegionIndex());
+
+        this->fipC_.assignWaterMass(globalDofIdx, fip, rhoW);
+    }   
+
+    template <typename IntensiveQuantities>
+    void updateMicrobialMass(const unsigned             globalDofIdx,
+                             const IntensiveQuantities& intQuants,
+                             const double               surfVolWat)
+    {
+        const Scalar mass = surfVolWat * intQuants.microbialConcentration().value();
+
+        this->fipC_.assignMicrobialMass(globalDofIdx, mass);
+    }
+
+    template <typename IntensiveQuantities>
+    void updateOxygenMass(const unsigned             globalDofIdx,
+                          const IntensiveQuantities& intQuants,
+                          const double               surfVolWat)
+    {
+        const Scalar mass = surfVolWat * intQuants.oxygenConcentration().value();
+
+        this->fipC_.assignOxygenMass(globalDofIdx, mass);
+    }
+
+    template <typename IntensiveQuantities>
+    void updateUreaMass(const unsigned             globalDofIdx,
+                        const IntensiveQuantities& intQuants,
+                        const double               surfVolWat)
+    {
+        const Scalar mass = surfVolWat * intQuants.ureaConcentration().value();
+
+        this->fipC_.assignUreaMass(globalDofIdx, mass);
+    }
+
+    template <typename IntensiveQuantities>
+    void updateBiofilmMass(const unsigned             globalDofIdx,
+                           const IntensiveQuantities& intQuants,
+                           const double               totVolume)
+    {
+        const Scalar mass = totVolume * intQuants.biofilmMass().value();
+
+        this->fipC_.assignBiofilmMass(globalDofIdx, mass);
+    }
+
+    template <typename IntensiveQuantities>
+    void updateCalciteMass(const unsigned             globalDofIdx,
+                           const IntensiveQuantities& intQuants,
+                           const double               totVolume)
+    {
+        const Scalar mass = totVolume * intQuants.calciteMass().value();
+
+        this->fipC_.assignCalciteMass(globalDofIdx, mass);
     }
 
     //! \brief Setup extractors for element-level data.
@@ -1390,8 +1532,7 @@ private:
                       micpC.assign(ectx.globalDofIdx,
                                    ectx.intQuants.microbialConcentration().value(),
                                    ectx.intQuants.oxygenConcentration().value(),
-                                   // Rescaling back the urea concentration (see WellInterface_impl.hpp)
-                                   10 * ectx.intQuants.ureaConcentration().value(),
+                                   ectx.intQuants.ureaConcentration().value(),
                                    ectx.intQuants.biofilmConcentration().value(),
                                    ectx.intQuants.calciteConcentration().value());
                   }, this->micpC_.allocated()
@@ -1544,35 +1685,36 @@ private:
 
         if constexpr (getPropValue<TypeTag, Properties::EnableMech>()) {
             if (this->mech_.allocated()) {
-                this->extractors_.emplace(
-                    [&mech = this->mech_,
-                     &model = simulator_.problem().geoMechModel()](const Context& ectx)
-                    {
-                        mech.assignDelStress(ectx.globalDofIdx,
-                                             model.delstress(ectx.globalDofIdx));
+                this->extractors_.push_back(
+                    Entry{[&mech = this->mech_,
+                           &model = simulator_.problem().geoMechModel()](const Context& ectx)
+                           {
+                              mech.assignDelStress(ectx.globalDofIdx,
+                                                   model.delstress(ectx.globalDofIdx));
 
-                        mech.assignDisplacement(ectx.globalDofIdx,
-                                                model.disp(ectx.globalDofIdx, /*include_fracture*/true));
+                              mech.assignDisplacement(ectx.globalDofIdx,
+                                                      model.disp(ectx.globalDofIdx, /*include_fracture*/true));
 
-                        // is the tresagii stress which make rock fracture
-                        mech.assignFracStress(ectx.globalDofIdx,
-                                              model.fractureStress(ectx.globalDofIdx));
+                              // is the tresagii stress which make rock fracture
+                              mech.assignFracStress(ectx.globalDofIdx,
+                                                    model.fractureStress(ectx.globalDofIdx));
 
-                        mech.assignLinStress(ectx.globalDofIdx,
-                                             model.linstress(ectx.globalDofIdx));
+                              mech.assignLinStress(ectx.globalDofIdx,
+                                                   model.linstress(ectx.globalDofIdx));
 
-                        mech.assignPotentialForces(ectx.globalDofIdx,
-                                                   model.mechPotentialForce(ectx.globalDofIdx),
-                                                   model.mechPotentialPressForce(ectx.globalDofIdx),
-                                                   model.mechPotentialTempForce(ectx.globalDofIdx));
+                              mech.assignPotentialForces(ectx.globalDofIdx,
+                                                         model.mechPotentialForce(ectx.globalDofIdx),
+                                                         model.mechPotentialPressForce(ectx.globalDofIdx),
+                                                         model.mechPotentialTempForce(ectx.globalDofIdx));
 
-                        mech.assignStrain(ectx.globalDofIdx,
-                                          model.strain(ectx.globalDofIdx, /*include_fracture*/true));
+                              mech.assignStrain(ectx.globalDofIdx,
+                                                model.strain(ectx.globalDofIdx, /*include_fracture*/true));
 
-                        // Total stress is not stored but calculated result is Voigt notation
-                        mech.assignStress(ectx.globalDofIdx,
-                                          model.stress(ectx.globalDofIdx, /*include_fracture*/true));
-                     }, true
+                              // Total stress is not stored but calculated result is Voigt notation
+                              mech.assignStress(ectx.globalDofIdx,
+                                                model.stress(ectx.globalDofIdx, /*include_fracture*/true));
+                           }
+                    }
                 );
             }
         }
@@ -1786,8 +1928,8 @@ private:
                                           getValue(ectx.fs.Rv()) *
                                           getValue(ectx.fs.invB(gasPhaseIdx)) *
                                           getValue(ectx.fs.saturation(gasPhaseIdx))) *
-                                         model.dofTotalVolume(ectx.globalDofIdx) *
-                                         getValue(ectx.intQuants.porosity());
+                                          model.dofTotalVolume(ectx.globalDofIdx) *
+                                          getValue(ectx.intQuants.porosity());
                               }
                   }
             },
@@ -1870,7 +2012,6 @@ private:
                                   return getValue(ectx.fs.Rv()) *
                                          getValue(ectx.fs.invB(gasPhaseIdx)) *
                                          getValue(ectx.fs.saturation(gasPhaseIdx)) *
-                                         getValue(ectx.fs.saturation(gasPhaseIdx)) *
                                          model.dofTotalVolume(ectx.globalDofIdx) *
                                          getValue(ectx.intQuants.porosity());
                               }
@@ -1883,8 +2024,8 @@ private:
                               &problem = this->simulator_.problem(),
                               &regions = this->regions_](const unsigned phaseIdx, const Context& ectx)
                              {
-                                 auto phase = RegionPhasePoreVolAverage::Phase{};
-                                 phase.ix = phaseIdx;
+                                auto phase = RegionPhasePoreVolAverage::Phase{};
+                                phase.ix = phaseIdx;
 
                                 // Note different region handling here.  FIPNUM is
                                 // one-based, but we need zero-based lookup in
@@ -1906,6 +2047,424 @@ private:
                                 const auto dz = problem.dofCenterDepth(ectx.globalDofIdx) - datum;
                                 return press - density*dz*grav[GridView::dimensionworld - 1];
                             }
+                  }
+            },
+            Entry{ScalarEntry{"BAMIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  const Scalar rhoW = FluidSystem::referenceDensity(waterPhaseIdx,
+                                                                   ectx.intQuants.pvtRegionIndex());
+                                  return getValue(ectx.fs.invB(waterPhaseIdx)) *
+                                         getValue(ectx.fs.saturation(waterPhaseIdx)) *
+                                         rhoW *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BMMIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  return getValue(ectx.intQuants.microbialConcentration()) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         model.dofTotalVolume(ectx.globalDofIdx);
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BMOIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  return getValue(ectx.intQuants.oxygenConcentration()) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         model.dofTotalVolume(ectx.globalDofIdx);
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BMUIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  return getValue(ectx.intQuants.ureaConcentration()) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) * 1;
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BMBIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  return model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.biofilmMass());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BMCIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  return model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.calciteMass());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMIP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  Scalar result = getValue(ectx.fs.invB(gasPhaseIdx)) *
+                                                  getValue(ectx.fs.saturation(gasPhaseIdx));
+
+                                  if (FluidSystem::phaseIsActive(oilPhaseIdx)) {
+                                       result += getValue(ectx.fs.Rs()) *
+                                                 getValue(ectx.fs.invB(oilPhaseIdx)) *
+                                                 getValue(ectx.fs.saturation(oilPhaseIdx));
+                                  }
+                                  else {
+                                      result += getValue(ectx.fs.Rsw()) *
+                                                getValue(ectx.fs.invB(waterPhaseIdx)) *
+                                                getValue(ectx.fs.saturation(waterPhaseIdx));
+                                  }
+                                  const Scalar rhoG = FluidSystem::referenceDensity(gasPhaseIdx,
+                                                                                    ectx.intQuants.pvtRegionIndex());
+                                  return result *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         rhoG;
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMGP",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  const Scalar rhoG = FluidSystem::referenceDensity(gasPhaseIdx,
+                                                                                    ectx.intQuants.pvtRegionIndex());
+                                  return getValue(ectx.fs.invB(gasPhaseIdx)) *
+                                         getValue(ectx.fs.saturation(gasPhaseIdx)) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         rhoG;
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMDS",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  Scalar result;
+                                  if (FluidSystem::phaseIsActive(oilPhaseIdx)) {
+                                      result  = getValue(ectx.fs.Rs()) *
+                                                getValue(ectx.fs.invB(oilPhaseIdx)) *
+                                                getValue(ectx.fs.saturation(oilPhaseIdx));
+                                  }
+                                  else {
+                                      result = getValue(ectx.fs.Rsw()) *
+                                               getValue(ectx.fs.invB(waterPhaseIdx)) *
+                                               getValue(ectx.fs.saturation(waterPhaseIdx));
+                                  }
+                                  const Scalar rhoG = FluidSystem::referenceDensity(gasPhaseIdx,
+                                                                                    ectx.intQuants.pvtRegionIndex());
+                                  return result *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         rhoG;
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMST",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  const Scalar sg = getValue(ectx.fs.saturation(gasPhaseIdx));
+                                  Scalar strandedGas = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      const Scalar krg = getValue(ectx.intQuants.relativePermeability(gasPhaseIdx));
+                                      strandedGas = MaterialLaw::strandedGasSaturation(matParams, sg, krg);
+                                  }
+                                  const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                    FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                  : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                  return (1.0 - xgW) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) * 
+                                         getValue(ectx.fs.density(gasPhaseIdx)) *
+                                         std::min(strandedGas, sg);
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMUS",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  const Scalar sg = getValue(ectx.fs.saturation(gasPhaseIdx));
+                                  Scalar strandedGas = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      const Scalar krg = getValue(ectx.intQuants.relativePermeability(gasPhaseIdx));
+                                      strandedGas = MaterialLaw::strandedGasSaturation(matParams, sg, krg);
+                                  }
+                                  const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                    FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                  : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                  return (1.0 - xgW) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) * 
+                                         getValue(ectx.fs.density(gasPhaseIdx)) *
+                                         std::max(Scalar{0.0}, sg - strandedGas);
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMTR",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  Scalar trappedGas = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      trappedGas = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/true);
+                                  }
+                                  const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                    FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                  : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                  return (1.0 - xgW) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) * 
+                                         getValue(ectx.fs.density(gasPhaseIdx)) *
+                                         std::min(trappedGas, getValue(ectx.fs.saturation(gasPhaseIdx)));
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGMMO",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  Scalar trappedGas = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      trappedGas = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/true);
+                                  }
+                                  const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                    FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                  : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                  return (1.0 - xgW) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) * 
+                                         getValue(ectx.fs.density(gasPhaseIdx)) *
+                                         std::max(Scalar{0.0}, getValue(ectx.fs.saturation(gasPhaseIdx)) - trappedGas);
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGKTR",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  const Scalar sg = getValue(ectx.fs.saturation(gasPhaseIdx));                                
+                                  Scalar sgcr = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      sgcr = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/false);
+                                  }
+                                  if (sg > sgcr) {
+                                      return 0.0;
+                                  }
+                                  else {
+                                      const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                        FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                      : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                      return (1.0 - xgW) *
+                                             model.dofTotalVolume(ectx.globalDofIdx) *
+                                             getValue(ectx.intQuants.porosity()) * 
+                                             getValue(ectx.fs.density(gasPhaseIdx)) *
+                                             getValue(ectx.fs.saturation(gasPhaseIdx));
+                                  }
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGKMO",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  const Scalar sg = getValue(ectx.fs.saturation(gasPhaseIdx));                                
+                                  Scalar sgcr = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      sgcr = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/false);
+                                  }
+                                  if (sgcr >= sg) {
+                                      return 0.0;
+                                  }
+                                  else {
+                                      const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                        FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                      : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                      return (1.0 - xgW) *
+                                             model.dofTotalVolume(ectx.globalDofIdx) *
+                                             getValue(ectx.intQuants.porosity()) * 
+                                             getValue(ectx.fs.density(gasPhaseIdx)) *
+                                             getValue(ectx.fs.saturation(gasPhaseIdx));
+                                  }
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGCDI",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  Scalar sgcr = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      sgcr = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/false);
+                                  }
+                                  const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                    FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                  : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                  return (1.0 - xgW) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) * 
+                                         getValue(ectx.fs.density(gasPhaseIdx)) *
+                                         std::min(sgcr, getValue(ectx.fs.saturation(gasPhaseIdx))) /
+                                         FluidSystem::molarMass(gasCompIdx, ectx.intQuants.pvtRegionIndex());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGCDM",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  Scalar sgcr = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      sgcr = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/false);
+                                  }
+                                  const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                    FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                  : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                  return (1.0 - xgW) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) * 
+                                         getValue(ectx.fs.density(gasPhaseIdx)) *
+                                         std::max(Scalar{0.0}, getValue(ectx.fs.saturation(gasPhaseIdx)) - sgcr) /
+                                         FluidSystem::molarMass(gasCompIdx, ectx.intQuants.pvtRegionIndex());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGKDI",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  const Scalar sg = getValue(ectx.fs.saturation(gasPhaseIdx));                                
+                                  Scalar sgcr = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      sgcr = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/false);
+                                  }
+                                  if (sg > sgcr) {
+                                      return 0.0;
+                                  }
+                                  else {
+                                      const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                        FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                      : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                      return (1.0 - xgW) *
+                                             model.dofTotalVolume(ectx.globalDofIdx) *
+                                             getValue(ectx.intQuants.porosity()) * 
+                                             getValue(ectx.fs.density(gasPhaseIdx)) *
+                                             getValue(ectx.fs.saturation(gasPhaseIdx)) /
+                                             FluidSystem::molarMass(gasCompIdx, ectx.intQuants.pvtRegionIndex());
+                                  }
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BGKDM",
+                              [&model = this->simulator_.model(),
+                               &problem = this->simulator_.problem()](const Context& ectx)
+                              {
+                                  const auto& scaledDrainageInfo = problem.materialLawManager()
+                                                                   ->oilWaterScaledEpsInfoDrainage(ectx.dofIdx);
+                                  const Scalar sg = getValue(ectx.fs.saturation(gasPhaseIdx));                                
+                                  Scalar sgcr = scaledDrainageInfo.Sgcr;
+                                  if (problem.materialLawManager()->enableHysteresis()) {
+                                      const auto& matParams = problem.materialLawParams(ectx.dofIdx);
+                                      sgcr = MaterialLaw::trappedGasSaturation(matParams, /*maxTrapping*/false);
+                                  }
+                                  if (sgcr >= sg) {
+                                      return 0.0;
+                                  }
+                                  else {
+                                      const Scalar xgW = FluidSystem::phaseIsActive(waterPhaseIdx) ?
+                                        FluidSystem::convertRvwToXgW(getValue(ectx.fs.Rvw()), ectx.intQuants.pvtRegionIndex())
+                                      : FluidSystem::convertRvToXgO(getValue(ectx.fs.Rv()), ectx.intQuants.pvtRegionIndex());
+                                      return (1.0 - xgW) *
+                                             model.dofTotalVolume(ectx.globalDofIdx) *
+                                             getValue(ectx.intQuants.porosity()) * 
+                                             getValue(ectx.fs.density(gasPhaseIdx)) *
+                                             getValue(ectx.fs.saturation(gasPhaseIdx)) /
+                                             FluidSystem::molarMass(gasCompIdx, ectx.intQuants.pvtRegionIndex());
+                                  }
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BWCD",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  Scalar result;
+                                  if (FluidSystem::phaseIsActive(oilPhaseIdx)) {
+                                      result  = getValue(ectx.fs.Rs()) *
+                                                getValue(ectx.fs.invB(oilPhaseIdx)) *
+                                                getValue(ectx.fs.saturation(oilPhaseIdx));
+                                  }
+                                  else {
+                                      result = getValue(ectx.fs.Rsw()) *
+                                               getValue(ectx.fs.invB(waterPhaseIdx)) *
+                                               getValue(ectx.fs.saturation(waterPhaseIdx));
+                                  }
+                                  const Scalar rhoG = FluidSystem::referenceDensity(gasPhaseIdx,
+                                                                                    ectx.intQuants.pvtRegionIndex());
+                                  return result *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity()) *
+                                         rhoG /
+                                         FluidSystem::molarMass(gasCompIdx, ectx.intQuants.pvtRegionIndex());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BWIPG",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  Scalar result = 0.0;
+                                  if (FluidSystem::phaseIsActive(gasPhaseIdx)) {
+                                      result  = getValue(ectx.fs.Rvw()) *
+                                                getValue(ectx.fs.invB(gasPhaseIdx)) *
+                                                getValue(ectx.fs.saturation(gasPhaseIdx));
+                                  }
+                                  return result *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity());
+                              }
+                  }
+            },
+            Entry{ScalarEntry{"BWIPL",
+                              [&model = this->simulator_.model()](const Context& ectx)
+                              {
+                                  return getValue(ectx.fs.invB(waterPhaseIdx)) *
+                                         getValue(ectx.fs.saturation(waterPhaseIdx)) *
+                                         model.dofTotalVolume(ectx.globalDofIdx) *
+                                         getValue(ectx.intQuants.porosity());
+                              }
                   }
             },
         };

@@ -196,9 +196,8 @@ public:
         this->readRockParameters_(simulator.vanguard().cellCenterDepths(), [&simulator](const unsigned idx) {
             std::array<int, dim> coords;
             simulator.vanguard().cartesianCoordinate(idx, coords);
-            for (auto& c : coords) {
-                ++c;
-            }
+            std::transform(coords.begin(), coords.end(), coords.begin(),
+                           [](const auto c) { return c + 1; });
             return coords;
         });
         FlowProblemType::readMaterialParameters_();
@@ -605,6 +604,21 @@ private:
     void handlePolymerBC(const BCProp::BCFace& /* bc */, RateVector& /* rate */) const override
     {
         throw std::logic_error("polymer is disabled for compositional modeling and you're trying to add polymer to BC");
+    }
+
+    void handleMicrBC(const BCProp::BCFace& /* bc */, RateVector& /* rate */) const override
+    {
+        throw std::logic_error("MICP is disabled for compositional modeling and you're trying to add microbes to BC");
+    }
+
+    void handleOxygBC(const BCProp::BCFace& /* bc */, RateVector& /* rate */) const override
+    {
+        throw std::logic_error("MICP is disabled for compositional modeling and you're trying to add oxygen to BC");
+    }
+
+    void handleUreaBC(const BCProp::BCFace& /* bc */, RateVector& /* rate */) const override
+    {
+        throw std::logic_error("MICP is disabled for compositional modeling and you're trying to add urea to BC");
     }
 
     FlowThresholdPressure<TypeTag> thresholdPressures_;

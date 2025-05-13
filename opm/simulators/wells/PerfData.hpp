@@ -66,7 +66,9 @@ public:
         serializer(polymer_rates);
         serializer(brine_rates);
         serializer(prod_index);
-        serializer(micp_rates);
+        serializer(microbial_rates);
+        serializer(oxygen_rates);
+        serializer(urea_rates);
         serializer(cell_index);
         serializer(connection_transmissibility_factor);
         serializer(connection_d_factor);
@@ -78,6 +80,8 @@ public:
         serializer(water_velocity);
         serializer(filtrate_data);
         serializer(connFracStatistics);
+        serializer(gas_mass_rates);
+        serializer(wat_mass_rates);
     }
 
     bool operator==(const PerfData&) const;
@@ -97,13 +101,17 @@ public:
     std::vector<Scalar> polymer_rates{};
     std::vector<Scalar> brine_rates{};
     std::vector<Scalar> prod_index{};
-    std::vector<Scalar> micp_rates{};
+    std::vector<Scalar> microbial_rates{};
+    std::vector<Scalar> oxygen_rates{};
+    std::vector<Scalar> urea_rates{};
     std::vector<std::size_t> cell_index{};
     std::vector<Scalar> connection_transmissibility_factor{};
     std::vector<Scalar> connection_d_factor{};
     std::vector<Scalar> connection_compaction_tmult{};
     std::vector<int> satnum_id{};
     std::vector<std::size_t> ecl_index{};
+    std::vector<Scalar> gas_mass_rates{};
+    std::vector<Scalar> wat_mass_rates{};
 
     // The water_throughput, skin_pressure and water_velocity variables are
     // only used for injectors to check the injectivity.

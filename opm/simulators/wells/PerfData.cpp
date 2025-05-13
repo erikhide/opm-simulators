@@ -42,13 +42,17 @@ PerfData<Scalar>::PerfData(const std::size_t num_perf,
     , polymer_rates(num_perf)
     , brine_rates(num_perf)
     , prod_index(num_perf * num_phases)
-    , micp_rates(num_perf)
+    , microbial_rates(num_perf)
+    , oxygen_rates(num_perf)
+    , urea_rates(num_perf)
     , cell_index(num_perf)
     , connection_transmissibility_factor(num_perf)
     , connection_d_factor(num_perf)
     , connection_compaction_tmult(num_perf)
     , satnum_id(num_perf)
     , ecl_index(num_perf)
+    , gas_mass_rates(num_perf)
+    , wat_mass_rates(num_perf)
 {
     if (injector) {
         prepareInjectorContainers();
@@ -79,7 +83,9 @@ PerfData<Scalar> PerfData<Scalar>::serializationTestObject()
     result.polymer_rates = {10.0, 11.0, 12.0};
     result.brine_rates = {13.0};
     result.prod_index = {14.0, 15.0};
-    result.micp_rates = {16.0};
+    result.microbial_rates = {16.0};
+    result.oxygen_rates = {16.0};
+    result.urea_rates = {16.0};
     result.cell_index = {17, 18, 19, 20};
     result.connection_transmissibility_factor = {21.0};
     result.connection_d_factor = {21.5};
@@ -91,6 +97,8 @@ PerfData<Scalar> PerfData<Scalar>::serializationTestObject()
     result.water_velocity = {29.0, 30.0};
     result.filtrate_data = ConnFiltrateData<Scalar>::serializationTestObject();
     result.connFracStatistics.assign(3, ConnFracStatistics<Scalar>::serializationTestObject());
+    result.gas_mass_rates = {31.0};
+    result.wat_mass_rates = {32.0};
 
     return result;
 }
@@ -127,12 +135,16 @@ bool PerfData<Scalar>::try_assign(const PerfData& other)
     this->polymer_rates = other.polymer_rates;
     this->brine_rates = other.brine_rates;
     this->prod_index = other.prod_index;
-    this->micp_rates = other.micp_rates;
+    this->microbial_rates = other.microbial_rates;
+    this->oxygen_rates = other.oxygen_rates;
+    this->urea_rates = other.urea_rates;
     this->water_throughput = other.water_throughput;
     this->skin_pressure = other.skin_pressure;
     this->water_velocity = other.water_velocity;
     this->filtrate_data = other.filtrate_data;
     this->connFracStatistics = other.connFracStatistics;
+    this->gas_mass_rates = other.gas_mass_rates;
+    this->wat_mass_rates = other.wat_mass_rates;
 
     return true;
 }
@@ -150,7 +162,9 @@ bool PerfData<Scalar>::operator==(const PerfData& rhs) const
         && (this->polymer_rates == rhs.polymer_rates)
         && (this->brine_rates == rhs.brine_rates)
         && (this->prod_index == rhs.prod_index)
-        && (this->micp_rates == rhs.micp_rates)
+        && (this->microbial_rates == rhs.microbial_rates)
+        && (this->oxygen_rates == rhs.oxygen_rates)
+        && (this->urea_rates == rhs.urea_rates)
         && (this->cell_index == rhs.cell_index)
         && (this->connection_transmissibility_factor == rhs.connection_transmissibility_factor)
         && (this->connection_d_factor == rhs.connection_d_factor)
@@ -162,6 +176,8 @@ bool PerfData<Scalar>::operator==(const PerfData& rhs) const
         && (this->water_velocity == rhs.water_velocity)
         && (this->filtrate_data == rhs.filtrate_data)
         && (this->connFracStatistics == rhs.connFracStatistics)
+        && (this->gas_mass_rates == rhs.gas_mass_rates)
+        && (this->wat_mass_rates == rhs.wat_mass_rates)
         ;
 }
 

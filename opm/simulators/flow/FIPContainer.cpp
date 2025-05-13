@@ -25,7 +25,7 @@
 
 #include <opm/input/eclipse/EclipseState/SummaryConfig/SummaryConfig.hpp>
 
-#include <opm/material/fluidsystems/BlackOilDefaultIndexTraits.hpp>
+#include <opm/material/fluidsystems/BlackOilDefaultFluidSystemIndices.hpp>
 #include <opm/material/fluidsystems/BlackOilFluidSystem.hpp>
 #include <opm/material/fluidsystems/GenericOilGasWaterFluidSystem.hpp>
 
@@ -338,6 +338,111 @@ assignCo2InWater(const unsigned globalDofIdx,
 }
 
 template<class FluidSystem>
+bool
+FIPContainer<FluidSystem>::
+hasMicrobialMass() const
+{
+    return has(Inplace::Phase::MicrobialMass);
+}
+
+template<class FluidSystem>
+void
+FIPContainer<FluidSystem>::
+assignMicrobialMass(const unsigned globalDofIdx,
+                    const Scalar   microbialMass)
+{
+    this->fip_[Inplace::Phase::MicrobialMass][globalDofIdx] = microbialMass;
+}
+
+template<class FluidSystem>
+bool
+FIPContainer<FluidSystem>::
+hasOxygenMass() const
+{
+    return has(Inplace::Phase::OxygenMass);
+}
+
+template<class FluidSystem>
+void
+FIPContainer<FluidSystem>::
+assignOxygenMass(const unsigned globalDofIdx,
+                 const Scalar   oxygenMass)
+{
+    this->fip_[Inplace::Phase::OxygenMass][globalDofIdx] = oxygenMass;
+}
+
+template<class FluidSystem>
+bool
+FIPContainer<FluidSystem>::
+hasUreaMass() const
+{
+    return has(Inplace::Phase::UreaMass);
+}
+
+template<class FluidSystem>
+void
+FIPContainer<FluidSystem>::
+assignUreaMass(const unsigned globalDofIdx,
+               const Scalar   ureaMass)
+{
+    this->fip_[Inplace::Phase::UreaMass][globalDofIdx] = ureaMass;
+}
+
+template<class FluidSystem>
+bool
+FIPContainer<FluidSystem>::
+hasBiofilmMass() const
+{
+    return has(Inplace::Phase::BiofilmMass);
+}
+
+template<class FluidSystem>
+void
+FIPContainer<FluidSystem>::
+assignBiofilmMass(const unsigned globalDofIdx,
+                  const Scalar   biofilmMass)
+{
+    this->fip_[Inplace::Phase::BiofilmMass][globalDofIdx] = biofilmMass;
+}
+
+template<class FluidSystem>
+bool
+FIPContainer<FluidSystem>::
+hasCalciteMass() const
+{
+    return has(Inplace::Phase::CalciteMass);
+}
+
+template<class FluidSystem>
+void
+FIPContainer<FluidSystem>::
+assignCalciteMass(const unsigned globalDofIdx,
+                  const Scalar   calciteMass)
+{
+    this->fip_[Inplace::Phase::CalciteMass][globalDofIdx] = calciteMass;
+}
+
+template<class FluidSystem>
+bool
+FIPContainer<FluidSystem>::
+hasWaterMass() const
+{
+    return has(Inplace::Phase::WaterMass);
+}
+
+template<class FluidSystem>
+void
+FIPContainer<FluidSystem>::
+assignWaterMass(const unsigned globalDofIdx,
+                const std::array<Scalar, numPhases>& fip,
+                const Scalar   rhoW)
+{
+    if (this->has(Inplace::Phase::WaterMass)) {
+        this->fip_[Inplace::Phase::WaterMass][globalDofIdx] = fip[waterPhaseIdx] * rhoW;
+    }
+}
+
+template<class FluidSystem>
 void
 FIPContainer<FluidSystem>::
 assignOilGasDistribution(const unsigned globalDofIdx,
@@ -427,7 +532,7 @@ assignPoreVolume(const unsigned globalDofIdx,
     this->fip_[Inplace::Phase::PoreVolume][globalDofIdx] = value;
 }
 
-template<class T> using FS = BlackOilFluidSystem<T,BlackOilDefaultIndexTraits>;
+template<class T> using FS = BlackOilFluidSystem<T, BlackOilDefaultFluidSystemIndices>;
 
 #define INSTANTIATE_TYPE(T) \
     template class FIPContainer<FS<T>>;

@@ -28,20 +28,26 @@
 #ifndef EWOMS_BLACK_OIL_LOCAL_TPFA_RESIDUAL_HH
 #define EWOMS_BLACK_OIL_LOCAL_TPFA_RESIDUAL_HH
 
-#include "blackoilproperties.hh"
-#include "blackoilsolventmodules.hh"
-#include "blackoilextbomodules.hh"
-#include "blackoilpolymermodules.hh"
-#include "blackoilenergymodules.hh"
-#include "blackoilfoammodules.hh"
-#include "blackoilbrinemodules.hh"
-#include "blackoildiffusionmodule.hh"
-#include "blackoilconvectivemixingmodule.hh"
-#include "blackoildispersionmodule.hh"
-#include "blackoilmicpmodules.hh"
-#include <opm/material/fluidstates/BlackOilFluidState.hpp>
 #include <opm/input/eclipse/EclipseState/Grid/FaceDir.hpp>
 #include <opm/input/eclipse/Schedule/BCProp.hpp>
+
+#include <opm/material/fluidstates/BlackOilFluidState.hpp>
+
+#include <opm/models/blackoil/blackoilbrinemodules.hh>
+#include <opm/models/blackoil/blackoilconvectivemixingmodule.hh>
+#include <opm/models/blackoil/blackoildiffusionmodule.hh>
+#include <opm/models/blackoil/blackoildispersionmodule.hh>
+#include <opm/models/blackoil/blackoilenergymodules.hh>
+#include <opm/models/blackoil/blackoilextbomodules.hh>
+#include <opm/models/blackoil/blackoilfoammodules.hh>
+#include <opm/models/blackoil/blackoilmicpmodules.hh>
+#include <opm/models/blackoil/blackoilpolymermodules.hh>
+#include <opm/models/blackoil/blackoilproperties.hh>
+#include <opm/models/blackoil/blackoilsolventmodules.hh>
+
+#include <array>
+#include <stdexcept>
+#include <string>
 
 namespace Opm {
 /*!
@@ -372,7 +378,10 @@ public:
             const IntensiveQuantities& up = (upIdx == interiorDofIdx) ? intQuantsIn : intQuantsEx;
             unsigned globalUpIndex = (upIdx == interiorDofIdx) ? globalIndexIn : globalIndexEx;
             // Use arithmetic average (more accurate with harmonic, but that requires recomputing the transmissbility)
-            const Evaluation transMult = (intQuantsIn.rockCompTransMultiplier() + Toolbox::value(intQuantsEx.rockCompTransMultiplier()))/2;
+            Evaluation transMult = (intQuantsIn.rockCompTransMultiplier() + Toolbox::value(intQuantsEx.rockCompTransMultiplier()))/2;
+            if constexpr (enableMICP) {
+                transMult *= (intQuantsIn.permFactor() + Toolbox::value(intQuantsEx.permFactor()))/2;
+            }
             Evaluation darcyFlux;
             if (globalUpIndex == globalIndexIn) {
                     darcyFlux = pressureDifference * up.mobility(phaseIdx, facedir) * transMult * (-trans / faceArea);
@@ -396,6 +405,10 @@ public:
                     EnergyModule::template addPhaseEnthalpyFluxes_<Evaluation, Evaluation, FluidState>(
                         flux, phaseIdx, darcyFlux, up.fluidState());
                 }
+                if constexpr (enableMICP) {
+                    MICPModule::template addMICPFluxes_<Evaluation, Evaluation, IntensiveQuantities>(
+                        flux, darcyFlux, intQuantsIn);
+                }
             } else {
                 const auto& invB = getInvB_<FluidSystem, FluidState, Scalar>(up.fluidState(), phaseIdx, pvtRegionIdx);
                 const auto& surfaceVolumeFlux = invB * darcyFlux;
@@ -405,6 +418,11 @@ public:
                     EnergyModule::template
                         addPhaseEnthalpyFluxes_<Scalar, Evaluation, FluidState>
                         (flux,phaseIdx,darcyFlux, up.fluidState());
+                }
+                if constexpr (enableMICP) {
+                    MICPModule::template
+                        addMICPFluxes_<Scalar, Evaluation, IntensiveQuantities>
+                        (flux, darcyFlux, intQuantsEx);
                 }
             }
 
@@ -444,17 +462,17 @@ public:
                 short interiorDofIdx = 0; // NB
                 short exteriorDofIdx = 1; // NB
 
-                EnergyModule::ExtensiveQuantities::template updateEnergy(heatFlux,
-                                                                         interiorDofIdx, // focusDofIndex,
-                                                                         interiorDofIdx,
-                                                                         exteriorDofIdx,
-                                                                         intQuantsIn,
-                                                                         intQuantsEx,
-                                                                         intQuantsIn.fluidState(),
-                                                                         intQuantsEx.fluidState(),
-                                                                         inAlpha,
-                                                                         outAlpha,
-                                                                         faceArea);
+                EnergyModule::ExtensiveQuantities::updateEnergy(heatFlux,
+                                                                interiorDofIdx, // focusDofIndex,
+                                                                interiorDofIdx,
+                                                                exteriorDofIdx,
+                                                                intQuantsIn,
+                                                                intQuantsEx,
+                                                                intQuantsIn.fluidState(),
+                                                                intQuantsEx.fluidState(),
+                                                                inAlpha,
+                                                                outAlpha,
+                                                                faceArea);
             }
             EnergyModule::addHeatFlux(flux, heatFlux);
         }
@@ -469,8 +487,6 @@ public:
         static_assert(!enableBrine, "Relevant computeFlux() method must be implemented for this module before enabling.");
         // BrineModule::computeFlux(flux, elemCtx, scvfIdx, timeIdx);
 
-
-
         // deal with diffusion (if present). opm-models expects per area flux (added in the tmpdiffusivity).
         if constexpr(enableDiffusion){
             typename DiffusionModule::ExtensiveQuantities::EvaluationArray effectiveDiffusionCoefficient;
@@ -478,12 +494,13 @@ public:
             const Scalar diffusivity = nbInfo.diffusivity;
             const Scalar tmpdiffusivity = diffusivity / faceArea;
             DiffusionModule::addDiffusiveFlux(flux,
-                                              intQuantsIn.fluidState(),
-                                              intQuantsEx.fluidState(),
+                                              intQuantsIn,
+                                              intQuantsEx,
                                               tmpdiffusivity,
                                               effectiveDiffusionCoefficient);
 
         }
+
         // deal with dispersion (if present). opm-models expects per area flux (added in the tmpdispersivity).
         if constexpr(enableDispersion){
             typename DispersionModule::ExtensiveQuantities::ScalarArray normVelocityAvg;
@@ -491,16 +508,17 @@ public:
             const Scalar dispersivity = nbInfo.dispersivity;
             const Scalar tmpdispersivity = dispersivity / faceArea;
             DispersionModule::addDispersiveFlux(flux,
-                                                intQuantsIn.fluidState(),
-                                                intQuantsEx.fluidState(),
+                                                intQuantsIn,
+                                                intQuantsEx,
                                                 tmpdispersivity,
                                                 normVelocityAvg);
 
         }
-        // deal with micp (if present)
-        static_assert(!enableMICP, "Relevant computeFlux() method must be implemented for this module before enabling.");
-        // MICPModule::computeFlux(flux, elemCtx, scvfIdx, timeIdx);
-
+        
+        // apply the scaling for the urea equation in MICP
+        if constexpr (enableMICP) {
+            MICPModule::applyScaling(flux);
+        }
     }
 
     template <class BoundaryConditionData>
@@ -612,22 +630,21 @@ public:
         // conductive heat flux from boundary
         if constexpr(enableEnergy){
             Evaluation heatFlux;
-            // avoid overload of functions with same numeber of elements in eclproblem
+            // avoid overload of functions with same number of elements in eclproblem
             Scalar alpha = problem.eclTransmissibilities().thermalHalfTransBoundary(globalSpaceIdx, bdyInfo.boundaryFaceIndex);
             unsigned inIdx = 0;//dummy
             // always calculated with derivatives of this cell
-            EnergyModule::ExtensiveQuantities::template updateEnergyBoundary(heatFlux,
-                                                                             insideIntQuants,
-                                                                             /*focusDofIndex*/ inIdx,
-                                                                             inIdx,
-                                                                             alpha,
-                                                                             bdyInfo.exFluidState);
+            EnergyModule::ExtensiveQuantities::updateEnergyBoundary(heatFlux,
+                                                                    insideIntQuants,
+                                                                    /*focusDofIndex*/ inIdx,
+                                                                    inIdx,
+                                                                    alpha,
+                                                                    bdyInfo.exFluidState);
             EnergyModule::addHeatFlux(bdyFlux, heatFlux);
         }
 
         static_assert(!enableSolvent, "Relevant treatment of boundary conditions must be implemented before enabling.");
         static_assert(!enablePolymer, "Relevant treatment of boundary conditions must be implemented before enabling.");
-        static_assert(!enableMICP, "Relevant treatment of boundary conditions must be implemented before enabling.");
 
         // make sure that the right mass conservation quantities are used
         adaptMassConservationQuantities_(bdyFlux, insideIntQuants.pvtRegionIndex());
@@ -658,12 +675,12 @@ public:
             Scalar alpha = problem.eclTransmissibilities().thermalHalfTransBoundary(globalSpaceIdx, bdyInfo.boundaryFaceIndex);
             unsigned inIdx = 0;//dummy
             // always calculated with derivatives of this cell
-            EnergyModule::ExtensiveQuantities::template updateEnergyBoundary(heatFlux,
-                                                                             insideIntQuants,
-                                                                             /*focusDofIndex*/ inIdx,
-                                                                             inIdx,
-                                                                             alpha,
-                                                                             bdyInfo.exFluidState);
+            EnergyModule::ExtensiveQuantities::updateEnergyBoundary(heatFlux,
+                                                                    insideIntQuants,
+                                                                    /*focusDofIndex*/ inIdx,
+                                                                    inIdx,
+                                                                    alpha,
+                                                                    bdyInfo.exFluidState);
             EnergyModule::addHeatFlux(bdyFlux, heatFlux);
         }
 
@@ -677,6 +694,7 @@ public:
 
     static void computeSource(RateVector& source,
                               const Problem& problem,
+                              const IntensiveQuantities& insideIntQuants,
                               unsigned globalSpaceIdex,
                               unsigned timeIdx)
     {
@@ -685,17 +703,16 @@ public:
         problem.source(source, globalSpaceIdex, timeIdx);
 
         // deal with MICP (if present)
-        // deal with micp (if present)
-        static_assert(!enableMICP, "Relevant addSource() method must be implemented for this module before enabling.");
-        // MICPModule::addSource(source, elemCtx, dofIdx, timeIdx);
+        MICPModule::addSource(source, problem, insideIntQuants, globalSpaceIdex);
 
         // scale the source term of the energy equation
-        if (enableEnergy)
+        if constexpr(enableEnergy)
             source[Indices::contiEnergyEqIdx] *= getPropValue<TypeTag, Properties::BlackOilEnergyScalingFactor>();
     }
 
     static void computeSourceDense(RateVector& source,
                                    const Problem& problem,
+                                   const IntensiveQuantities& insideIntQuants,
                                    unsigned globalSpaceIdex,
                                    unsigned timeIdx)
     {
@@ -703,12 +720,10 @@ public:
         problem.addToSourceDense(source, globalSpaceIdex, timeIdx);
 
         // deal with MICP (if present)
-        // deal with micp (if present)
-        static_assert(!enableMICP, "Relevant addSource() method must be implemented for this module before enabling.");
-        // MICPModule::addSource(source, elemCtx, dofIdx, timeIdx);
+        MICPModule::addSource(source, problem, insideIntQuants, globalSpaceIdex);
 
         // scale the source term of the energy equation
-        if (enableEnergy)
+        if constexpr(enableEnergy)
             source[Indices::contiEnergyEqIdx] *= getPropValue<TypeTag, Properties::BlackOilEnergyScalingFactor>();
     }
 
@@ -729,7 +744,7 @@ public:
 
         // scale the source term of the energy equation
         if constexpr(enableEnergy)
-                        source[Indices::contiEnergyEqIdx] *= getPropValue<TypeTag, Properties::BlackOilEnergyScalingFactor>();
+            source[Indices::contiEnergyEqIdx] *= getPropValue<TypeTag, Properties::BlackOilEnergyScalingFactor>();
     }
 
     template <class UpEval, class FluidState>
