@@ -838,6 +838,7 @@ run()
                 const double tol =  Parameters::Get<Parameters::TimeStepControlTolerance>();
                 const double safetyFactor = Parameters::Get<Parameters::TimeStepControlSafetyFactor>();
                 new_time_step = std::sqrt(safetyFactor * tol / solver_().model().relativeChange()) * dt;
+                //new_time_step = dt;
             }
 
             checkTimeStepMinLimit_(new_time_step);

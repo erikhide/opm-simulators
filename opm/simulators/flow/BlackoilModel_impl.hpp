@@ -488,6 +488,8 @@ solveJacobianSystem(BVector& x)
     auto& residual = simulator_.model().linearizer().residual();
     auto& linSolver = simulator_.model().newtonMethod().linearSolver();
 
+    std::cout << std::setprecision(40);
+
     const int numSolvers = linSolver.numAvailableSolvers();
     if (numSolvers > 1 && (linSolver.getSolveCount() % 100 == 0)) {
         if (terminal_output_) {

@@ -388,7 +388,7 @@ namespace Opm
     {
         bool acceptTimeStep = true;
 
-        /*if (rejectCompletedStep_ && chopCounter_ < 2) {
+        /*if (rejectCompletedStep_ && chopCounter_ < 1) {
             chopCounter_++;
             acceptTimeStep = false;
         }
