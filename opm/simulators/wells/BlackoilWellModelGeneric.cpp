@@ -1480,7 +1480,6 @@ forceShutWellByName(const std::string& wellname,
             }
             wellTestState().close_well(wellname, WellTestConfig::Reason::PHYSICAL, simulation_time);
             well_was_shut = 1;
-            force_shut_wells_.push_back(well->indexOfWell());
             break;
         }
     }
@@ -1520,20 +1519,6 @@ inferLocalShutWells()
             this->local_shut_wells_.push_back(wellID);
         }
     }
-}
-
-template<class Scalar>
-bool BlackoilWellModelGeneric<Scalar>::
-isForceShutWell(int wellId) const
-{
-    return std::count(force_shut_wells_.begin(), force_shut_wells_.end(), wellId) > 0;
-}
-
-template<class Scalar>
-void BlackoilWellModelGeneric<Scalar>::
-removeFromForceShutWell(int wellId)
-{
-    std::remove(force_shut_wells_.begin(), force_shut_wells_.end(), wellId);
 }
 
 template<class Scalar>
@@ -2095,7 +2080,6 @@ operator==(const BlackoilWellModelGeneric& rhs) const
         && this->report_step_starts_ == rhs.report_step_starts_
         && this->last_run_wellpi_ == rhs.last_run_wellpi_
         && this->local_shut_wells_ == rhs.local_shut_wells_
-        && this->force_shut_wells_ == rhs.force_shut_wells_
         && this->closed_this_step_ == rhs.closed_this_step_
         && this->node_pressures_ == rhs.node_pressures_
         && this->prev_inj_multipliers_ == rhs.prev_inj_multipliers_

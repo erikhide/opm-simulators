@@ -290,7 +290,7 @@ public:
 
     // TODO: theoretically, it should be a const function
     // Simulator is not const is because that assembleWellEq is non-const Simulator
-    bool wellTesting(const Simulator& simulator,
+    void wellTesting(const Simulator& simulator,
                      const double simulation_time,
                      /* const */ WellState<Scalar>& well_state,
                      const GroupState<Scalar>& group_state,

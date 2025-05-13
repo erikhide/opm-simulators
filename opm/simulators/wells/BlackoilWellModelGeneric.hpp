@@ -213,9 +213,6 @@ public:
                              const double simulation_time,
                              const bool dont_shut_grup_wells);
 
-    bool isForceShutWell(int wellId) const;
-    void removeFromForceShutWell(int wellId);
-
     const std::vector<PerforationData<Scalar>>& perfData(const int well_idx) const
     { return well_perf_data_[well_idx]; }
 
@@ -253,7 +250,6 @@ public:
         serializer(report_step_starts_);
         serializer(last_run_wellpi_);
         serializer(local_shut_wells_);
-        serializer(force_shut_wells_);
         serializer(closed_this_step_);
         serializer(guideRate_);
         serializer(node_pressures_);
@@ -499,7 +495,6 @@ protected:
     std::vector<WellInterfaceGeneric<Scalar>*> well_container_generic_{};
 
     std::vector<int> local_shut_wells_{};
-    std::vector<int> force_shut_wells_{};
 
     std::vector<ParallelWellInfo<Scalar>> parallel_well_info_;
     std::vector<std::reference_wrapper<ParallelWellInfo<Scalar>>> local_parallel_well_info_;
