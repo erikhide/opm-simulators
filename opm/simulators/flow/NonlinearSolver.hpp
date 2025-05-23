@@ -181,8 +181,18 @@ struct NonlinearSolverParameters
                 report.time_step_rejected = true;
                 failureReport_ = report;
 
+                if (model_->simulator().gridView().comm().rank() == 0) {
+                    std::cout << "Failed RC: " << relativeChange << std::endl;
+                }
+
                 std::string msg = "Relative change in solution for time step was " + std::to_string(relativeChange) + ", which is larger than the tolerance accepted by the timestepping algorithm.";
                 OPM_THROW_NOLOG(TimeSteppingBreakdown, msg);
+            }
+
+            if (model_->simulator().gridView().comm().rank() == 0)
+            {
+                std::cout << "RC: " << relativeChange << std::endl;
+                std::cout << "T: " << report.timestep_length << std::endl;
             }
 
             // Do model-specific post-step actions.
